@@ -12,6 +12,7 @@
   const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
   const state = {
     rows: [], filter: "all", step: 1, previewIndex: 0, logoData: "", currentExport: null,
+    isGenerating: false, cancelRequested: false, cancelLocked: false,
     config: { template: "minimal", studio: "Northlight Studio", label: "Scan to view your photos", accent: "#3569e8", paper: "a4", grid: "2x4" },
     histories: loadHistory()
   };
@@ -20,7 +21,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
+    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
     bindEvents();
     renderHistory();
     updateStepper();
@@ -55,6 +56,8 @@
     el.confirmMapping.addEventListener("change", () => el.generateBtn.disabled = !el.confirmMapping.checked || getErrors().length > 0);
     el.generateBtn.addEventListener("click", openGenerateDialog);
     el.confirmGenerateBtn.addEventListener("click", generateExport);
+    [el.cancelGenerateBtn,el.dialogCloseBtn].forEach(button => button.addEventListener("click", cancelGenerationOrClose));
+    el.generateDialog.addEventListener("cancel", event => { if(state.isGenerating){event.preventDefault();requestGenerationCancel();} });
     el.insufficientBtn.addEventListener("click", () => toast("Simulation: insufficient balance blocks export; no tokens were deducted."));
     el.downloadPdfBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.downloadPdfBtn, "Download print PDF"));
     el.downloadMappingBtn.addEventListener("click", () => runMappingDownload(state.currentExport, el.downloadMappingBtn));
@@ -81,12 +84,16 @@
       else if (ch === '\n') { row.push(cell.replace(/\r$/, "")); if (row.some(v => v.trim() !== "")) records.push(row); row = []; cell = ""; }
       else cell += ch;
     }
+    if (quoted) throw new Error("CSV contains an unclosed quoted field");
     row.push(cell.replace(/\r$/, "")); if (row.some(v => v.trim() !== "")) records.push(row);
     if (!records.length) return [];
     const headers = records.shift().map(h => h.trim().toLowerCase());
     const missing = ["recipient_id", "gallery_url"].filter(h => !headers.includes(h));
     if (missing.length) throw new Error(`Missing required column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`);
-    return records.slice(0, 1000).map((values, index) => {
+    const duplicateHeaders = headers.filter((header,index) => header && headers.indexOf(header) !== index);
+    if (duplicateHeaders.length) throw new Error(`Duplicate column name: ${[...new Set(duplicateHeaders)].join(", ")}`);
+    if (records.length > 1000) throw new Error(`CSV has ${records.length.toLocaleString()} data rows; this prototype accepts at most 1,000. No rows were imported.`);
+    return records.map((values, index) => {
       const item = blankRow(index + 2);
       headers.forEach((header, i) => { if (fields.includes(header)) item[header] = (values[i] || "").trim(); });
       return item;
@@ -227,25 +234,51 @@
   function gridInfo(config=state.config) { const [cols,rows]=config.grid.split("x").map(Number); return {cols,rows,perPage:cols*rows}; }
   function expandCards(rows) { return rows.flatMap(row=>Array.from({length:Number(row.copies||1)},(_,i)=>({...row,copy_number:i+1}))); }
 
-  function openGenerateDialog() { if(!canContinue())return toast("Fix blocking errors before generation."); el.dialogError.hidden=true; el.dialogError.textContent=""; el.generateDialog.showModal(); }
-
-  async function generateExport() {
-    el.confirmGenerateBtn.disabled=true; el.confirmGenerateBtn.textContent="Generating…"; el.dialogError.hidden=true; el.dialogError.textContent=""; setStatus("Generating stable IDs, QR assets and export mapping…");
-    try {
-      const rows=getValidRows(), now=new Date(), batchId=`BQR-${now.toISOString().slice(0,10).replaceAll("-","")}-${hash(rows.map(r=>r.recipient_id+r.gallery_url).join("|"))}`; const exportId=`EXP-${hash(batchId+JSON.stringify(state.config))}`; const info=gridInfo(); const cardIdByRecipient=new Map(); rows.forEach(r=>cardIdByRecipient.set(r.recipient_id,`CARD-${hash(batchId+"|"+r.recipient_id)}`));
-      const cards=expandCards(rows).map((row,index)=>({...row,batch_id:batchId,export_id:exportId,card_id:cardIdByRecipient.get(row.recipient_id),qr_value:row.gallery_url,page:Math.floor(index/info.perPage)+1,row:Math.floor((index%info.perPage)/info.cols)+1,column:(index%info.cols)+1,template_version:`${state.config.template}-v1`}));
-      const record={batch_id:batchId,export_id:exportId,status:"Completed",created_at:now.toISOString(),version:1,config:{...state.config},logoData:state.logoData,recipients:rows.map(r=>({...r,_errors:undefined})),cards,audit:[{timestamp:now.toISOString(),action:"export_completed",actor:"demo-user",target:exportId}]};
-      await generatePdf(record,true); downloadMapping(record);
-      state.currentExport=record; state.histories=state.histories.filter(h=>h.export_id!==exportId); state.histories.unshift(record); saveHistory(); renderHistory(); el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${cards.length.toLocaleString()} cards · ${Math.ceil(cards.length/info.perPage)} pages · ${batchId} · No tokens deducted`; setStatus("Export completed. PDF and mapping share the same immutable layout snapshot."); window.scrollTo({top:110,behavior:"smooth"});
-    } catch(error) { console.error(error); const message=`Export failed: ${error.message}. Your imported recipients are still available; fix the issue and try again.`; el.dialogError.textContent=message; el.dialogError.hidden=false; setStatus(message,true); toast("Export failed. No history or charge was recorded."); }
-    finally { el.confirmGenerateBtn.disabled=false; el.confirmGenerateBtn.textContent="Confirm & generate"; }
+  function openGenerateDialog() {
+    if(!canContinue())return toast("Fix blocking errors before generation.");
+    state.cancelRequested=false; state.cancelLocked=false; el.dialogError.hidden=true; el.dialogError.textContent=""; el.generationProgress.hidden=true; el.cancelGenerateBtn.disabled=false; el.cancelGenerateBtn.textContent="Cancel"; el.dialogCloseBtn.disabled=false; el.generateDialog.showModal();
   }
 
-  async function generatePdf(record, download) {
-    if(!record)throw new Error("No export is available"); if(!window.jspdf)throw new Error("PDF library is unavailable"); if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");
+  function cancelGenerationOrClose() { if(!state.isGenerating)return el.generateDialog.close(); requestGenerationCancel(); }
+  function requestGenerationCancel() {
+    if(!state.isGenerating||state.cancelLocked)return;
+    state.cancelRequested=true; el.cancelGenerateBtn.disabled=true; el.dialogCloseBtn.disabled=true; el.cancelGenerateBtn.textContent="Cancelling…"; el.progressLabel.textContent="Cancelling safely…"; setStatus("Cancelling export before any completed batch is recorded…");
+  }
+  function ensureNotCancelled(){if(state.cancelRequested){const error=new Error("Export cancelled");error.name="ExportCancelledError";throw error;}}
+  function updateGenerationProgress(done,total,pages,phase="Rendering QR cards") { el.generationProgress.hidden=false; el.progressBar.max=Math.max(1,total); el.progressBar.value=done; el.progressCount.textContent=`${done.toLocaleString()} / ${total.toLocaleString()} · ${pages} page${pages===1?"":"s"}`; el.progressLabel.textContent=phase; }
+  function yieldToBrowser(){return new Promise(resolve=>setTimeout(resolve,0));}
+
+  function snapshotPayload(record){return JSON.stringify({layout_version:record.layout_version,config:record.config,logoData:record.logoData||"",cards:record.cards.map(c=>({batch_id:c.batch_id,export_id:c.export_id,card_id:c.card_id,recipient_id:c.recipient_id,gallery_url:c.gallery_url,qr_value:c.qr_value,copies:c.copies,copy_number:c.copy_number,page:c.page,row:c.row,column:c.column,template_version:c.template_version}))});}
+  function snapshotSignature(record){return `SNAP-${hash(snapshotPayload(record))}`;}
+  function validateExportSnapshot(record){if(!record)throw new Error("No completed export is available");const actual=snapshotSignature(record);if(record.snapshot_signature!==actual)throw new Error("Export snapshot integrity check failed");return actual;}
+  function createExportRecord() {
+    const rows=getValidRows().map(row=>Object.fromEntries(fields.map(field=>[field,row[field]]))), now=new Date(), batchId=`BQR-${now.toISOString().slice(0,10).replaceAll("-","")}-${hash(rows.map(r=>r.recipient_id+r.gallery_url).join("|"))}`, exportId=`EXP-${hash(batchId+JSON.stringify(state.config))}`, info=gridInfo(), cardIdByRecipient=new Map();
+    rows.forEach(row=>cardIdByRecipient.set(row.recipient_id,`CARD-${hash(batchId+"|"+row.recipient_id)}`));
+    const cards=expandCards(rows).map((row,index)=>({...row,batch_id:batchId,export_id:exportId,card_id:cardIdByRecipient.get(row.recipient_id),qr_value:row.gallery_url,page:Math.floor(index/info.perPage)+1,row:Math.floor((index%info.perPage)/info.cols)+1,column:(index%info.cols)+1,template_version:`${state.config.template}-v1`,status:"Active"}));
+    const record={batch_id:batchId,export_id:exportId,status:"Completed",created_at:now.toISOString(),version:1,layout_version:"bulk-qr-layout-v1",config:{...state.config},logoData:state.logoData,recipients:rows,cards,demo_overrides:{},audit:[{timestamp:now.toISOString(),action:"export_completed",actor:"demo-user",target:exportId}]};
+    record.snapshot_signature=snapshotSignature(record); return record;
+  }
+
+  async function generateExport() {
+    if(state.isGenerating)return;
+    state.isGenerating=true; state.cancelRequested=false; state.cancelLocked=false; el.confirmGenerateBtn.disabled=true; el.confirmGenerateBtn.textContent="Generating…"; el.cancelGenerateBtn.disabled=false; el.dialogCloseBtn.disabled=false; el.dialogError.hidden=true; el.dialogError.textContent=""; setStatus("Generating stable IDs, QR assets and export mapping…");
+    try {
+      const record=createExportRecord(), info=gridInfo(record.config), pages=Math.ceil(record.cards.length/info.perPage); updateGenerationProgress(0,record.cards.length,pages);
+      const pdf=await generatePdf(record,false,{shouldCancel:()=>state.cancelRequested,onProgress:(done,total)=>updateGenerationProgress(done,total,pages,`Rendering page ${Math.max(1,Math.ceil(done/info.perPage))} of ${pages}`)}); ensureNotCancelled();
+      const mapping=createMappingCsv(record); if(!mapping.text||mapping.count!==record.cards.length)throw new Error("Mapping CSV is incomplete");
+      state.cancelLocked=true; el.cancelGenerateBtn.disabled=true; el.dialogCloseBtn.disabled=true; updateGenerationProgress(record.cards.length,record.cards.length,pages,"Finalizing both downloads…");
+      const saveResult=pdf.save(`${record.batch_id}-${record.export_id}.pdf`,{returnPromise:true}); if(saveResult&&typeof saveResult.then==="function")await saveResult; downloadText(`${record.batch_id}-mapping.csv`,mapping.text,"text/csv;charset=utf-8");
+      state.currentExport=record; state.histories=state.histories.filter(h=>h.export_id!==record.export_id); state.histories.unshift(record); saveHistory(); renderHistory(); el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${record.cards.length.toLocaleString()} cards · ${pages} pages · ${record.batch_id} · No tokens deducted`; setStatus(`Export completed. PDF and mapping verified against ${record.snapshot_signature}.`); window.scrollTo({top:110,behavior:"smooth"});
+    } catch(error) {
+      console.error(error); const cancelled=error.name==="ExportCancelledError", message=cancelled?"Export cancelled. No files, history or token charge were recorded.":`Export failed: ${error.message}. Your imported recipients are still available; resolve the issue and retry.`; el.dialogError.textContent=message; el.dialogError.hidden=false; setStatus(message,!cancelled); toast(cancelled?"Export cancelled safely.":"Export failed. No completed history or charge was recorded.");
+    } finally { state.isGenerating=false; state.cancelLocked=false; el.confirmGenerateBtn.disabled=false; el.confirmGenerateBtn.textContent="Confirm & generate"; el.cancelGenerateBtn.disabled=false; el.cancelGenerateBtn.textContent="Cancel"; el.dialogCloseBtn.disabled=false; }
+  }
+
+  async function generatePdf(record, download, options={}) {
+    validateExportSnapshot(record); if(!window.jspdf)throw new Error("PDF library is unavailable"); if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");
     const {jsPDF}=window.jspdf, config=record.config, info=gridInfo(config), isA4=config.paper==="a4", pageW=isA4?210:215.9, pageH=isA4?297:279.4, margin=10, gap=3, cardW=(pageW-margin*2-gap*(info.cols-1))/info.cols, cardH=(pageH-margin*2-gap*(info.rows-1))/info.rows, pdf=new jsPDF({orientation:"portrait",unit:"mm",format:isA4?"a4":"letter",compress:true});
     for(let index=0;index<record.cards.length;index++){
-      if(index>0&&index%info.perPage===0)pdf.addPage(); const pos=index%info.perPage,row=Math.floor(pos/info.cols),col=pos%info.cols,x=margin+col*(cardW+gap),y=margin+row*(cardH+gap),card=record.cards[index];
+      if(options.shouldCancel?.())ensureNotCancelled(); if(index>0&&index%info.perPage===0)pdf.addPage(); const pos=index%info.perPage,row=Math.floor(pos/info.cols),col=pos%info.cols,x=margin+col*(cardW+gap),y=margin+row*(cardH+gap),card=record.cards[index];
       pdf.setDrawColor(190,198,210); pdf.setLineDashPattern([1,1],0); pdf.rect(x,y,cardW,cardH); pdf.setLineDashPattern([],0); const accent=hexToRgb(config.accent);
       if(config.template==="branded"){pdf.setFillColor(23,40,68);pdf.rect(x+.6,y+.6,cardW-1.2,cardH-1.2,"F");pdf.setFillColor(...accent);pdf.rect(x+.6,y+.6,2,cardH-1.2,"F");pdf.setTextColor(255,255,255);} else {pdf.setFillColor(config.template==="school"?255:255,config.template==="school"?248:255,config.template==="school"?231:255);pdf.rect(x+.6,y+.6,cardW-1.2,cardH-1.2,"F");pdf.setTextColor(23,32,51);pdf.setFillColor(...accent); if(config.template==="school")pdf.rect(x+.6,y+.6,cardW-1.2,2,"F");else pdf.rect(x+.6,y+cardH-2.6,cardW-1.2,2,"F");}
       if(record.logoData){try{pdf.addImage(record.logoData,"PNG",x+5,y+5,8,8,undefined,"FAST");}catch{}} else {pdf.setFillColor(...accent);pdf.roundedRect(x+5,y+5,8,8,1.5,1.5,"F");pdf.setTextColor(255,255,255);pdf.setFontSize(5);pdf.text(config.studio.slice(0,1).toUpperCase(),x+9,y+10.5,{align:"center"});}
@@ -254,9 +287,9 @@
       pdf.setFontSize(Math.max(7,Math.min(10,cardW/8)));pdf.setTextColor(config.template==="branded"?255:23,config.template==="branded"?255:32,config.template==="branded"?255:51); const label=pdf.splitTextToSize(safePdfText(card.card_label||config.label),cardW*.47).slice(0,3);pdf.text(label,x+5,y+cardH*.45);
       pdf.setFont("helvetica","normal");pdf.setFontSize(5);pdf.setTextColor(config.template==="branded"?210:100,config.template==="branded"?218:112,config.template==="branded"?230:128);pdf.text(safePdfText(card.recipient_name||card.recipient_id).slice(0,45),x+5,y+cardH*.75);
       const qrSize=Math.min(cardH*.52,cardW*.34,30),qrX=x+cardW-qrSize-5,qrY=y+Math.max(5,(cardH-qrSize)/2-2),qrData=await qrDataUrl(card.qr_value,420);pdf.setFillColor(255,255,255);pdf.rect(qrX-1.5,qrY-1.5,qrSize+3,qrSize+3,"F");pdf.addImage(qrData,"PNG",qrX,qrY,qrSize,qrSize,undefined,"FAST");pdf.setTextColor(config.template==="branded"?220:70);pdf.setFontSize(4);pdf.text("SCAN TO OPEN GALLERY",qrX+qrSize/2,qrY+qrSize+3,{align:"center"});
-      pdf.setTextColor(125);pdf.setFontSize(3.5);pdf.text(`${record.batch_id} · P${card.page} R${card.row} C${card.column}`,x+cardW-3,y+cardH-2.5,{align:"right"});
+      pdf.setTextColor(125);pdf.setFontSize(3.5);pdf.text(`${record.batch_id} · P${card.page} R${card.row} C${card.column}`,x+cardW-3,y+cardH-2.5,{align:"right"}); options.onProgress?.(index+1,record.cards.length); await yieldToBrowser();
     }
-    const bytes=pdf.output("arraybuffer"); if(!(bytes instanceof ArrayBuffer)||bytes.byteLength<1000)throw new Error("Generated PDF is empty or invalid");
+    if(options.shouldCancel?.())ensureNotCancelled(); validateExportSnapshot(record); const bytes=pdf.output("arraybuffer"); if(!(bytes instanceof ArrayBuffer)||bytes.byteLength<1000)throw new Error("Generated PDF is empty or invalid");
     if(download){const saveResult=pdf.save(`${record.batch_id}-${record.export_id}.pdf`,{returnPromise:true});if(saveResult&&typeof saveResult.then==="function")await saveResult;} return pdf;
   }
 
@@ -276,23 +309,28 @@
   }
 
   function downloadMapping(record) {
-    if(!record)throw new Error("No completed export is available"); const header=["batch_id","export_id","card_id","recipient_id","destination","page","row","column","copies","copy_number","template_version","qr_value","status"];
-    const lines=[header,...record.cards.map(c=>[c.batch_id,c.export_id,c.card_id,c.recipient_id,c.gallery_url,c.page,c.row,c.column,c.copies,c.copy_number,c.template_version,c.qr_value,c.status||"Active"])]; downloadText(`${record.batch_id}-mapping.csv`,toCsv(lines),"text/csv;charset=utf-8");
-    return record.cards.length;
+    const mapping=createMappingCsv(record); downloadText(`${record.batch_id}-mapping.csv`,mapping.text,"text/csv;charset=utf-8"); return mapping.count;
   }
+  function createMappingCsv(record) { validateExportSnapshot(record); const header=["batch_id","export_id","snapshot_signature","layout_version","card_id","recipient_id","destination","page","row","column","copies","copy_number","template_version","qr_value","status"]; const lines=[header,...record.cards.map(c=>[c.batch_id,c.export_id,record.snapshot_signature,record.layout_version,c.card_id,c.recipient_id,c.gallery_url,c.page,c.row,c.column,c.copies,c.copy_number,c.template_version,c.qr_value,c.status||"Active"])]; return {text:toCsv(lines),count:record.cards.length}; }
 
   function toCsv(rows) { return "\uFEFF"+rows.map(row=>row.map(csvCell).join(",")).join("\r\n"); }
   function csvCell(value) { let text=String(value??""); if(/^[=+\-@\t\r]/.test(text))text="'"+text; return `"${text.replaceAll('"','""')}"`; }
   function downloadText(name,text,type) { const blob=new Blob([text],{type});if(!blob.size)throw new Error("Generated file is empty");const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.style.display="none";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000); }
 
-  function loadHistory(){try{return JSON.parse(localStorage.getItem("printcart_bulk_qr_history")||"[]");}catch{return[]}}
+  function normalizeHistoryRecord(record){if(!record||!Array.isArray(record.cards))return null;record.layout_version=record.layout_version||"bulk-qr-layout-v1";record.demo_overrides=record.demo_overrides||{};record.audit=Array.isArray(record.audit)?record.audit:[];record.snapshot_signature=record.snapshot_signature||snapshotSignature(record);return record;}
+  function loadHistory(){try{return JSON.parse(localStorage.getItem("printcart_bulk_qr_history")||"[]").map(normalizeHistoryRecord).filter(Boolean);}catch{return[]}}
   function saveHistory(){try{localStorage.setItem("printcart_bulk_qr_history",JSON.stringify(state.histories.slice(0,8)));}catch{toast("Browser storage is full; history was not persisted.");}}
   function renderHistory(){el.historyCount.textContent=state.histories.length;el.historyEmpty.hidden=state.histories.length>0;el.historyList.innerHTML=state.histories.map((r,i)=>`<article class="history-item"><div><strong>${escapeHtml(r.batch_id)}</strong><small>${new Date(r.created_at).toLocaleString()}</small><span class="status-badge valid">✓ ${escapeHtml(r.status)}</span></div><div><small>Recipients</small><strong>${r.recipients.length}</strong></div><div><small>Cards</small><strong>${r.cards.length}</strong></div><div><small>Export</small><strong>v${r.version}</strong></div><div class="history-actions"><button class="btn compact secondary" data-history-open="${i}">Inspect</button><button class="btn compact secondary" data-history-pdf="${i}">PDF</button><button class="btn compact secondary" data-history-csv="${i}">CSV</button></div></article>`).join("");$$('[data-history-open]',el.historyList).forEach(b=>b.addEventListener("click",()=>showHistoryDetail(Number(b.dataset.historyOpen))));$$('[data-history-pdf]',el.historyList).forEach(b=>b.addEventListener("click",()=>runPdfDownload(state.histories[Number(b.dataset.historyPdf)],b,"PDF")));$$('[data-history-csv]',el.historyList).forEach(b=>b.addEventListener("click",()=>runMappingDownload(state.histories[Number(b.dataset.historyCsv)],b)));}
 
   function showHistory(){el.resultPanel.hidden=true;$$('[data-panel]').forEach(p=>p.hidden=true);el.historyPanel.hidden=false;renderHistory();window.scrollTo({top:110,behavior:"smooth"});}
-  function showHistoryDetail(index){const record=state.histories[index];el.historyDetail.hidden=false;el.historyDetail.className="history-detail";el.historyDetail.innerHTML=`<div class="history-detail-head"><div><p class="step-label">BROWSER-LOCAL SIMULATION</p><h3>${escapeHtml(record.batch_id)}</h3><p>Printed direct URLs cannot be changed by these controls.</p></div><button class="text-link" id="closeDetail">Close</button></div><div class="history-search"><input id="cardSearch" type="search" placeholder="Search card ID or recipient ID"><button class="btn compact secondary" id="cardSearchBtn">Search</button></div><div id="cardRecords"></div><h3>Audit events</h3><ul class="audit-list">${record.audit.map(a=>`<li>${new Date(a.timestamp).toLocaleString()} · ${escapeHtml(a.actor)} · ${escapeHtml(a.action)} · ${escapeHtml(a.target)}</li>`).join("")}</ul>`;$("#closeDetail").onclick=()=>el.historyDetail.hidden=true;const draw=()=>{const q=$("#cardSearch").value.trim().toLowerCase();const cards=[...new Map(record.cards.map(c=>[c.card_id,c])).values()].filter(c=>!q||c.card_id.toLowerCase().includes(q)||c.recipient_id.toLowerCase().includes(q)).slice(0,20);$("#cardRecords").innerHTML=cards.map(c=>`<div class="card-record"><div><strong>${escapeHtml(c.card_id)}</strong><small>${escapeHtml(c.recipient_id)} · <span class="status-badge ${c.status==="Revoked"?"error":"valid"}">${escapeHtml(c.status||"Active")}</span></small></div><input value="${escapeAttr(c.gallery_url)}" aria-label="Demo destination for ${escapeAttr(c.card_id)}"><div class="record-actions"><button class="btn compact secondary" data-update-card="${escapeAttr(c.card_id)}">Change destination</button><button class="btn compact secondary" data-revoke-card="${escapeAttr(c.card_id)}">Revoke</button></div></div>`).join("")||"<p>No matching card.</p>";$$('[data-update-card]',el.historyDetail).forEach(b=>b.onclick=()=>updateDemoCard(record,b.dataset.updateCard,b.closest(".card-record").querySelector("input").value,false));$$('[data-revoke-card]',el.historyDetail).forEach(b=>b.onclick=()=>updateDemoCard(record,b.dataset.revokeCard,"",true));};$("#cardSearchBtn").onclick=draw;$("#cardSearch").oninput=draw;draw();}
+  function showHistoryDetail(index){
+    const record=state.histories[index]; el.historyDetail.hidden=false; el.historyDetail.className="history-detail"; el.historyDetail.innerHTML=`<div class="history-detail-head"><div><p class="step-label">BROWSER-LOCAL SIMULATION</p><h3>${escapeHtml(record.batch_id)}</h3><p>Export snapshot ${escapeHtml(record.snapshot_signature)} is locked. Demo controls never alter PDF, CSV or reprint data.</p></div><button class="text-link" id="closeDetail">Close</button></div><div class="history-search"><input id="cardSearch" type="search" placeholder="Search card ID or recipient ID"><button class="btn compact secondary" id="cardSearchBtn">Search</button></div><div id="cardRecords"></div><h3>Audit events</h3><ul class="audit-list">${record.audit.map(a=>`<li>${new Date(a.timestamp).toLocaleString()} · ${escapeHtml(a.actor)} · ${escapeHtml(a.action)} · ${escapeHtml(a.target)}</li>`).join("")}</ul>`;
+    $("#closeDetail").onclick=()=>el.historyDetail.hidden=true;
+    const draw=()=>{const q=$("#cardSearch").value.trim().toLowerCase(),cards=[...new Map(record.cards.map(c=>[c.card_id,c])).values()].filter(c=>!q||c.card_id.toLowerCase().includes(q)||c.recipient_id.toLowerCase().includes(q)).slice(0,20);$("#cardRecords").innerHTML=cards.map(c=>{const override=record.demo_overrides[c.card_id]||{},status=override.status||"Active",destination=override.gallery_url||c.gallery_url;return `<div class="card-record"><div><strong>${escapeHtml(c.card_id)}</strong><small>${escapeHtml(c.recipient_id)} · <span class="status-badge ${status==="Revoked"?"error":"valid"}">${escapeHtml(status)}</span></small></div><input value="${escapeAttr(destination)}" aria-label="Demo destination for ${escapeAttr(c.card_id)}"><div class="record-actions"><button class="btn compact secondary" data-update-card="${escapeAttr(c.card_id)}">Change destination</button><button class="btn compact secondary" data-revoke-card="${escapeAttr(c.card_id)}">Revoke</button></div></div>`;}).join("")||"<p>No matching card.</p>";$$('[data-update-card]',el.historyDetail).forEach(b=>b.onclick=()=>updateDemoCard(record,b.dataset.updateCard,b.closest(".card-record").querySelector("input").value,false));$$('[data-revoke-card]',el.historyDetail).forEach(b=>b.onclick=()=>updateDemoCard(record,b.dataset.revokeCard,"",true));};
+    $("#cardSearchBtn").onclick=draw; $("#cardSearch").oninput=draw; draw();
+  }
 
-  function updateDemoCard(record,cardId,url,revoke){if(!revoke){try{const u=new URL(url);if(u.protocol!=="https:")throw new Error();}catch{return toast("Destination must be a valid HTTPS URL.");}}record.cards.filter(c=>c.card_id===cardId).forEach(c=>{if(!revoke)c.gallery_url=url;c.status=revoke?"Revoked":"Active";});record.audit.unshift({timestamp:new Date().toISOString(),action:revoke?"qr_revoked_demo":"destination_updated_demo",actor:"demo-user",target:cardId});saveHistory();toast(revoke?"Local revoke recorded. Printed direct QR remains active.":"Local destination changed. Printed direct QR is unchanged.");showHistoryDetail(state.histories.indexOf(record));}
+  function updateDemoCard(record,cardId,url,revoke){if(!revoke){try{const u=new URL(url);if(u.protocol!=="https:")throw new Error();}catch{return toast("Destination must be a valid HTTPS URL.");}}validateExportSnapshot(record);record.demo_overrides[cardId]={gallery_url:revoke?(record.demo_overrides[cardId]?.gallery_url||record.cards.find(c=>c.card_id===cardId)?.gallery_url):url,status:revoke?"Revoked":"Active"};record.audit.unshift({timestamp:new Date().toISOString(),action:revoke?"qr_revoked_demo":"destination_updated_demo",actor:"demo-user",target:cardId});saveHistory();toast(revoke?"Local revoke recorded. Locked export snapshot is unchanged.":"Local destination changed. Locked export snapshot is unchanged.");showHistoryDetail(state.histories.indexOf(record));}
 
   function resetBatch(){state.rows=[];state.previewIndex=0;state.currentExport=null;el.urlPaste.value="";el.csvInput.value="";el.resultPanel.hidden=true;renderImport();showStep(1);setStatus("New draft batch started.");}
   function setStatus(message,error=false){el.globalStatus.textContent=message;el.globalStatus.style.color=error?"var(--red)":"var(--muted)";}
