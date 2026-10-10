@@ -20,7 +20,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
+    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
     bindEvents();
     renderHistory();
     updateStepper();
@@ -227,21 +227,22 @@
   function gridInfo(config=state.config) { const [cols,rows]=config.grid.split("x").map(Number); return {cols,rows,perPage:cols*rows}; }
   function expandCards(rows) { return rows.flatMap(row=>Array.from({length:Number(row.copies||1)},(_,i)=>({...row,copy_number:i+1}))); }
 
-  function openGenerateDialog() { if(!canContinue())return toast("Fix blocking errors before generation."); el.generateDialog.showModal(); }
+  function openGenerateDialog() { if(!canContinue())return toast("Fix blocking errors before generation."); el.dialogError.hidden=true; el.dialogError.textContent=""; el.generateDialog.showModal(); }
 
   async function generateExport() {
-    el.confirmGenerateBtn.disabled=true; el.confirmGenerateBtn.textContent="Generating…"; setStatus("Generating stable IDs, QR assets and export mapping…");
+    el.confirmGenerateBtn.disabled=true; el.confirmGenerateBtn.textContent="Generating…"; el.dialogError.hidden=true; el.dialogError.textContent=""; setStatus("Generating stable IDs, QR assets and export mapping…");
     try {
       const rows=getValidRows(), now=new Date(), batchId=`BQR-${now.toISOString().slice(0,10).replaceAll("-","")}-${hash(rows.map(r=>r.recipient_id+r.gallery_url).join("|"))}`; const exportId=`EXP-${hash(batchId+JSON.stringify(state.config))}`; const info=gridInfo(); const cardIdByRecipient=new Map(); rows.forEach(r=>cardIdByRecipient.set(r.recipient_id,`CARD-${hash(batchId+"|"+r.recipient_id)}`));
       const cards=expandCards(rows).map((row,index)=>({...row,batch_id:batchId,export_id:exportId,card_id:cardIdByRecipient.get(row.recipient_id),qr_value:row.gallery_url,page:Math.floor(index/info.perPage)+1,row:Math.floor((index%info.perPage)/info.cols)+1,column:(index%info.cols)+1,template_version:`${state.config.template}-v1`}));
-      const record={batch_id:batchId,export_id:exportId,status:"Completed",created_at:now.toISOString(),version:1,config:{...state.config},logoData:state.logoData,recipients:rows.map(r=>({...r,_errors:undefined})),cards,audit:[{timestamp:now.toISOString(),action:"export_completed",actor:"demo-user",target:exportId}]}; state.currentExport=record;
-      state.histories=state.histories.filter(h=>h.export_id!==exportId); state.histories.unshift(record); saveHistory(); renderHistory(); await generatePdf(record,true); downloadMapping(record); el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${cards.length.toLocaleString()} cards · ${Math.ceil(cards.length/info.perPage)} pages · ${batchId} · No tokens deducted`; setStatus("Export completed. PDF and mapping share the same immutable layout snapshot."); window.scrollTo({top:110,behavior:"smooth"});
-    } catch(error) { console.error(error); setStatus(`Export failed: ${error.message}`,true); toast("Export failed. No charge was simulated."); }
+      const record={batch_id:batchId,export_id:exportId,status:"Completed",created_at:now.toISOString(),version:1,config:{...state.config},logoData:state.logoData,recipients:rows.map(r=>({...r,_errors:undefined})),cards,audit:[{timestamp:now.toISOString(),action:"export_completed",actor:"demo-user",target:exportId}]};
+      await generatePdf(record,true); downloadMapping(record);
+      state.currentExport=record; state.histories=state.histories.filter(h=>h.export_id!==exportId); state.histories.unshift(record); saveHistory(); renderHistory(); el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${cards.length.toLocaleString()} cards · ${Math.ceil(cards.length/info.perPage)} pages · ${batchId} · No tokens deducted`; setStatus("Export completed. PDF and mapping share the same immutable layout snapshot."); window.scrollTo({top:110,behavior:"smooth"});
+    } catch(error) { console.error(error); const message=`Export failed: ${error.message}. Your imported recipients are still available; fix the issue and try again.`; el.dialogError.textContent=message; el.dialogError.hidden=false; setStatus(message,true); toast("Export failed. No history or charge was recorded."); }
     finally { el.confirmGenerateBtn.disabled=false; el.confirmGenerateBtn.textContent="Confirm & generate"; }
   }
 
   async function generatePdf(record, download) {
-    if(!record)throw new Error("No export is available"); if(!window.jspdf)throw new Error("PDF library did not load. Check the internet connection and reload."); if(!window.QRCode)throw new Error("QR library did not load. Check the internet connection and reload.");
+    if(!record)throw new Error("No export is available"); if(!window.jspdf)throw new Error("PDF library is unavailable"); if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");
     const {jsPDF}=window.jspdf, config=record.config, info=gridInfo(config), isA4=config.paper==="a4", pageW=isA4?210:215.9, pageH=isA4?297:279.4, margin=10, gap=3, cardW=(pageW-margin*2-gap*(info.cols-1))/info.cols, cardH=(pageH-margin*2-gap*(info.rows-1))/info.rows, pdf=new jsPDF({orientation:"portrait",unit:"mm",format:isA4?"a4":"letter",compress:true});
     for(let index=0;index<record.cards.length;index++){
       if(index>0&&index%info.perPage===0)pdf.addPage(); const pos=index%info.perPage,row=Math.floor(pos/info.cols),col=pos%info.cols,x=margin+col*(cardW+gap),y=margin+row*(cardH+gap),card=record.cards[index];
@@ -280,8 +281,16 @@
   function setStatus(message,error=false){el.globalStatus.textContent=message;el.globalStatus.style.color=error?"var(--red)":"var(--muted)";}
   function toast(message){el.toast.textContent=message;el.toast.classList.add("show");clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.toast.classList.remove("show"),3300);}
 
-  function drawQr(canvas,text,size){if(!window.QRCode){canvas.getContext("2d").clearRect(0,0,canvas.width,canvas.height);return Promise.resolve();}return window.QRCode.toCanvas(canvas,text,{width:size,margin:4,errorCorrectionLevel:"M",color:{dark:"#000000",light:"#ffffff"}});}
-  function qrDataUrl(text,size){return new Promise((resolve,reject)=>{if(!window.QRCode)return reject(new Error("QR library is unavailable"));window.QRCode.toDataURL(text,{width:size,margin:4,errorCorrectionLevel:"M",color:{dark:"#000000",light:"#ffffff"}},(error,url)=>error?reject(error):resolve(url));});}
+  function drawQr(canvas,text,size){
+    if(typeof window.qrcode!=="function"){canvas.getContext("2d").clearRect(0,0,canvas.width,canvas.height);return Promise.resolve();}
+    try{
+      const qr=window.qrcode(0,"M"); qr.addData(String(text)); qr.make(); const modules=qr.getModuleCount(), quiet=4, total=modules+quiet*2, cell=Math.max(1,Math.floor(size/total)), drawn=cell*total, offset=Math.floor((size-drawn)/2), context=canvas.getContext("2d");
+      canvas.width=size; canvas.height=size; context.imageSmoothingEnabled=false; context.fillStyle="#ffffff"; context.fillRect(0,0,size,size); context.fillStyle="#000000";
+      for(let row=0;row<modules;row++)for(let column=0;column<modules;column++)if(qr.isDark(row,column))context.fillRect(offset+(column+quiet)*cell,offset+(row+quiet)*cell,cell,cell);
+      return Promise.resolve();
+    }catch(error){return Promise.reject(new Error(`Could not generate QR: ${error.message}`));}
+  }
+  async function qrDataUrl(text,size){if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");const canvas=document.createElement("canvas");await drawQr(canvas,text,size);return canvas.toDataURL("image/png");}
   function hash(text){let h=2166136261;for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(36).toUpperCase().padStart(7,"0").slice(0,7);}
   function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
   function safePdfText(value){return String(value??"").normalize("NFKD").replace(/[\u0300-\u036f]/g,"").replace(/[^\x20-\x7E]/g,"?");}
