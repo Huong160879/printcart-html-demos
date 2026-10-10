@@ -1,0 +1,4 @@
+recipient_id,gallery_url,recipient_name,group_name,card_label,access_code,copies,sort_order
+FAM-201,https://example.com/gallery/family-day-2026,Minh Nguyen,Family Day,Family Day gallery,,3,1
+FAM-202,https://example.com/gallery/family-day-2026,Linh Tran,Family Day,Family Day gallery,,2,2
+FAM-203,https://example.com/gallery/family-day-2026,Quang Le,Family Day,Family Day gallery,,1,3

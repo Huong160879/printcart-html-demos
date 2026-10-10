@@ -1,0 +1,6 @@
+recipient_id,gallery_url,recipient_name,group_name,card_label,access_code,copies,sort_order
+STU-001,https://example.com/gallery/student-001,An Nguyen,Class 5A,Your school photos are ready,,1,1
+STU-002,https://example.com/gallery/student-002,Binh Tran,Class 5A,Scan to view your photos,,2,2
+STU-003,https://example.com/gallery/student-003,Chi Le,Class 5B,Memories from picture day,,1,3
+STU-004,https://example.com/gallery/student-004,Dung Pham,Class 5B,Your portraits are ready,,1,4
+STU-005,https://example.com/gallery/student-005,Giang Vo,Class 5C,Scan to view and order prints,,1,5

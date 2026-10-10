@@ -1,0 +1,7 @@
+recipient_id,gallery_url,recipient_name,group_name,card_label,access_code,copies,sort_order
+STU-101,http://example.com/gallery/student-101,An Nguyen,Class 6A,HTTP is blocked,,1,1
+STU-102,https://example.com/gallery/student-102,Binh Tran,Class 6A,Valid row,,1,2
+STU-102,https://example.com/gallery/student-103,Chi Le,Class 6A,Duplicate recipient ID,,1,3
+,https://example.com/gallery/student-104,Dung Pham,Class 6B,Missing recipient ID,,1,4
+STU-105,not-a-url,Giang Vo,Class 6B,Invalid URL,,0,5
+STU-106,https://example.com/gallery/student-106,Hanh Bui,Class 6B,This label is intentionally very long so the constrained card template can warn about text that may overflow the safe print area,,many,6
