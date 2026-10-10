@@ -2,6 +2,8 @@
   "use strict";
 
   const fields = ["recipient_id", "gallery_url", "recipient_name", "group_name", "card_label", "access_code", "copies", "sort_order"];
+  const MAX_RECIPIENTS = 1000;
+  const MAX_PHYSICAL_CARDS = 1000;
   const samples = {
     valid: `recipient_id,gallery_url,recipient_name,group_name,card_label,access_code,copies,sort_order\nSTU-001,https://example.com/gallery/student-001,An Nguyen,Class 5A,Your school photos are ready,,1,1\nSTU-002,https://example.com/gallery/student-002,Binh Tran,Class 5A,Scan to view your photos,,2,2\nSTU-003,https://example.com/gallery/student-003,Chi Le,Class 5B,Memories from picture day,,1,3\nSTU-004,https://example.com/gallery/student-004,Dung Pham,Class 5B,Your portraits are ready,,1,4\nSTU-005,https://example.com/gallery/student-005,Giang Vo,Class 5C,Scan to view and order prints,,1,5`,
     errors: `recipient_id,gallery_url,recipient_name,group_name,card_label,access_code,copies,sort_order\nSTU-101,http://example.com/gallery/student-101,An Nguyen,Class 6A,HTTP is blocked,,1,1\nSTU-102,https://example.com/gallery/student-102,Binh Tran,Class 6A,Valid row,,1,2\nSTU-102,https://example.com/gallery/student-103,Chi Le,Class 6A,Duplicate recipient ID,,1,3\n,https://example.com/gallery/student-104,Dung Pham,Class 6B,Missing recipient ID,,1,4\nSTU-105,not-a-url,Giang Vo,Class 6B,Invalid URL,,0,5\nSTU-106,https://example.com/gallery/student-106,Hanh Bui,Class 6B,This label is intentionally very long so the constrained card template can warn about text that may overflow the safe print area,,many,6`,
@@ -11,7 +13,7 @@
   const $ = (selector, scope = document) => scope.querySelector(selector);
   const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
   const state = {
-    rows: [], filter: "all", step: 1, previewIndex: 0, logoData: "", currentExport: null,
+    rows: [], filter: "all", step: 1, previewIndex: 0, logoData: "", currentExport: null, importMode: "csv", feedbackRating: 0,
     isGenerating: false, cancelRequested: false, cancelLocked: false,
     config: { template: "minimal", studio: "Northlight Studio", label: "Scan to view your photos", accent: "#3569e8", paper: "a4", grid: "2x4" },
     histories: loadHistory()
@@ -21,13 +23,14 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
+    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","validationCallout","validationTitle","validationMessage","showErrorsBtn","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","reviewValidationStatus","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","feedbackPanel","feedbackStars","feedbackComment","feedbackStatus","submitFeedbackBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
     bindEvents();
     renderHistory();
     updateStepper();
   }
 
   function bindEvents() {
+    $$('[data-import-mode]').forEach(button => button.addEventListener("click", () => switchImportMode(button.dataset.importMode)));
     el.browseBtn.addEventListener("click", e => { e.stopPropagation(); el.csvInput.click(); });
     el.dropZone.addEventListener("click", () => el.csvInput.click());
     el.dropZone.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.csvInput.click(); } });
@@ -42,6 +45,7 @@
     el.recipientRows.addEventListener("input", editCell);
     el.recipientRows.addEventListener("click", e => { const button = e.target.closest("[data-remove]"); if (!button) return; state.rows.splice(Number(button.dataset.remove), 1); state.rows.forEach((r, i) => r._sourceRow = i + 2); validateRows(); renderImport(); });
     el.errorsCsvBtn.addEventListener("click", downloadErrors);
+    el.showErrorsBtn.addEventListener("click", showValidationErrors);
     el.toCustomizeBtn.addEventListener("click", () => showStep(2));
     $$('[data-back]').forEach(btn => btn.addEventListener("click", () => showStep(Number(btn.dataset.back))));
     $$('input[name=template]').forEach(input => input.addEventListener("change", () => { state.config.template = input.value; updateTemplateSelection(); renderCardPreview(); }));
@@ -53,7 +57,7 @@
     $("#sheetTab").addEventListener("click", () => switchReviewTab("sheet"));
     el.reviewRecipient.addEventListener("change", renderReviewCard);
     el.pageSelect.addEventListener("change", renderSheetPreview);
-    el.confirmMapping.addEventListener("change", () => el.generateBtn.disabled = !el.confirmMapping.checked || getErrors().length > 0);
+    el.confirmMapping.addEventListener("change", () => el.generateBtn.disabled = !el.confirmMapping.checked || !canContinue());
     el.generateBtn.addEventListener("click", openGenerateDialog);
     el.confirmGenerateBtn.addEventListener("click", generateExport);
     [el.cancelGenerateBtn,el.dialogCloseBtn].forEach(button => button.addEventListener("click", cancelGenerationOrClose));
@@ -62,12 +66,34 @@
     el.downloadPdfBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.downloadPdfBtn, "Download print PDF"));
     el.downloadMappingBtn.addEventListener("click", () => runMappingDownload(state.currentExport, el.downloadMappingBtn));
     el.reprintBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.reprintBtn, "Reprint same export"));
+    $$('[data-rating]',el.feedbackStars).forEach(button => button.addEventListener("click", () => selectFeedbackRating(Number(button.dataset.rating))));
+    el.submitFeedbackBtn.addEventListener("click", submitFeedback);
     [el.historyBtn,el.viewHistoryBtn].forEach(btn => btn.addEventListener("click", showHistory));
     el.closeHistoryBtn.addEventListener("click", () => { el.historyPanel.hidden = true; showStep(state.step); });
     el.newBatchBtn.addEventListener("click", resetBatch);
     el.walletBtn.addEventListener("click", () => el.walletDialog.showModal());
     $("#dashboardLink").addEventListener("click", e => { e.preventDefault(); toast("Dashboard link placeholder — existing Printcart Dashboard is not rebuilt here."); });
     $$(".stepper button").forEach(btn => btn.addEventListener("click", () => { const target = Number(btn.parentElement.dataset.step); if (target === 1 || (target === 2 && canContinue()) || (target === 3 && canContinue())) showStep(target); }));
+  }
+
+  function switchImportMode(mode) {
+    state.importMode=mode; $$('[data-import-mode]').forEach(button=>{const active=button.dataset.importMode===mode;button.classList.toggle("active",active);button.setAttribute("aria-selected",String(active));}); $$('[data-import-panel]').forEach(panel=>panel.hidden=panel.dataset.importPanel!==mode);
+  }
+
+  function showValidationErrors() {
+    state.filter="error"; $$('[data-filter]').forEach(button=>button.classList.toggle("active",button.dataset.filter==="error")); renderRows(); el.recipientRows.closest(".table-scroll").scrollIntoView({behavior:"smooth",block:"center"});
+  }
+
+  function selectFeedbackRating(rating) {
+    state.feedbackRating=rating; $$('[data-rating]',el.feedbackStars).forEach(button=>{const selected=Number(button.dataset.rating)<=rating;button.classList.toggle("selected",selected);button.setAttribute("aria-checked",String(Number(button.dataset.rating)===rating));}); el.submitFeedbackBtn.disabled=false; el.feedbackStatus.textContent=`${rating} of 5 selected`;
+  }
+
+  function resetFeedbackForm() {
+    state.feedbackRating=0; el.feedbackComment.value=""; el.feedbackStatus.textContent=""; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>{button.classList.remove("selected");button.setAttribute("aria-checked","false");button.disabled=false;});
+  }
+
+  function submitFeedback() {
+    if(!state.feedbackRating)return; const entry={rating:state.feedbackRating,comment:el.feedbackComment.value.trim(),batch_id:state.currentExport?.batch_id||"",created_at:new Date().toISOString()}; try{const saved=JSON.parse(localStorage.getItem("printcart_bulk_qr_feedback")||"[]");saved.unshift(entry);localStorage.setItem("printcart_bulk_qr_feedback",JSON.stringify(saved.slice(0,20)));}catch{return toast("Feedback could not be saved in this browser.");} el.feedbackStatus.textContent="Thank you — feedback saved in this browser."; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>button.disabled=true); el.feedbackComment.disabled=true; toast("Thank you for your feedback.");
   }
 
   function parseCsv(text) {
@@ -92,7 +118,7 @@
     if (missing.length) throw new Error(`Missing required column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`);
     const duplicateHeaders = headers.filter((header,index) => header && headers.indexOf(header) !== index);
     if (duplicateHeaders.length) throw new Error(`Duplicate column name: ${[...new Set(duplicateHeaders)].join(", ")}`);
-    if (records.length > 1000) throw new Error(`CSV has ${records.length.toLocaleString()} data rows; this prototype accepts at most 1,000. No rows were imported.`);
+    if (records.length > MAX_RECIPIENTS) throw new Error(`CSV has ${records.length.toLocaleString()} data rows; this prototype accepts at most ${MAX_RECIPIENTS.toLocaleString()}. No rows were imported.`);
     return records.map((values, index) => {
       const item = blankRow(index + 2);
       headers.forEach((header, i) => { if (fields.includes(header)) item[header] = (values[i] || "").trim(); });
@@ -114,14 +140,15 @@
   function importPastedUrls() {
     const urls = el.urlPaste.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
     if (!urls.length) return setStatus("Paste at least one gallery URL.", true);
-    importRows(urls.slice(0,1000).map((url, i) => ({ ...blankRow(i + 2), recipient_id:`URL-${String(i + 1).padStart(3,"0")}`, gallery_url:url })));
+    if (urls.length > MAX_RECIPIENTS) return setStatus(`Pasted list has ${urls.length.toLocaleString()} URLs; the limit is ${MAX_RECIPIENTS.toLocaleString()}. No URLs were imported.`, true);
+    importRows(urls.map((url, i) => ({ ...blankRow(i + 2), recipient_id:`URL-${String(i + 1).padStart(3,"0")}`, gallery_url:url })));
     setStatus(`${urls.length} URL${urls.length === 1 ? "" : "s"} imported.`);
   }
 
   function loadSample(name) {
     if (name === "stress") {
-      const rows = Array.from({length:1000}, (_, i) => ({...blankRow(i+2),recipient_id:`BENCH-${String(i+1).padStart(4,"0")}`,gallery_url:`https://example.com/gallery/benchmark-${i+1}`,recipient_name:`Recipient ${i+1}`,group_name:`Group ${Math.floor(i/25)+1}`,card_label:"Scan to view your photos",copies:String(i%20===0?2:1),sort_order:String(i+1)}));
-      const started = performance.now(); importRows(rows); setStatus(`1,000 rows validated in ${Math.round(performance.now()-started)} ms on this browser. This is not a production SLA.`); return;
+      const rows = Array.from({length:MAX_RECIPIENTS}, (_, i) => ({...blankRow(i+2),recipient_id:`BENCH-${String(i+1).padStart(4,"0")}`,gallery_url:`https://example.com/gallery/benchmark-${i+1}`,recipient_name:`Recipient ${i+1}`,group_name:`Group ${Math.floor(i/25)+1}`,card_label:"Scan to view your photos",copies:"1",sort_order:String(i+1)}));
+      const started = performance.now(); importRows(rows); setStatus(`${MAX_RECIPIENTS.toLocaleString()} recipients and physical cards validated in ${Math.round(performance.now()-started)} ms on this browser. This is not a production SLA.`); return;
     }
     importRows(parseCsv(samples[name])); setStatus(`Loaded ${name === "errors" ? "mixed-error" : name} sample data.`);
   }
@@ -148,15 +175,18 @@
   function getValidRows() { return state.rows.filter(r => Object.keys(r._errors).length === 0).sort((a,b) => Number(a.sort_order||a._sourceRow)-Number(b.sort_order||b._sourceRow) || a._sourceRow-b._sourceRow); }
   function getErrors() { return state.rows.filter(r => Object.keys(r._errors).length); }
   function totalCards(rows = getValidRows()) { return rows.reduce((sum,row) => sum + Number(row.copies || 1), 0); }
-  function canContinue() { return state.rows.length > 0 && getErrors().length === 0 && getValidRows().length > 0; }
+  function exceedsCardLimit(rows=getValidRows()) { return totalCards(rows) > MAX_PHYSICAL_CARDS; }
+  function blockingIssueCount() { return getErrors().length + (exceedsCardLimit()?1:0); }
+  function canContinue() { return state.rows.length > 0 && blockingIssueCount() === 0 && getValidRows().length > 0; }
 
   function renderImport() {
     el.emptyState.hidden = state.rows.length > 0; el.dataArea.hidden = state.rows.length === 0;
-    const valid = getValidRows(), errors = getErrors(), copies = totalCards(valid);
-    el.validationSummary.innerHTML = tile("Imported rows",state.rows.length)+tile("Valid rows",valid.length,"good")+tile("Blocking errors",errors.length,errors.length?"bad":"good")+tile("Physical cards",copies);
+    const valid = getValidRows(), errors = getErrors(), copies = totalCards(valid), overLimit=copies>MAX_PHYSICAL_CARDS, blocking=errors.length+(overLimit?1:0);
+    el.validationSummary.innerHTML = tile("Imported rows",state.rows.length)+tile("Valid rows",valid.length,"good")+tile("Blocking issues",blocking,blocking?"bad":"good")+tile("Physical cards",copies,overLimit?"bad":"");
     $("#allCount").textContent = state.rows.length; $("#validCount").textContent = valid.length; $("#errorCount").textContent = errors.length;
-    el.errorsCsvBtn.disabled = !errors.length; el.toCustomizeBtn.disabled = !canContinue();
-    el.importGate.textContent = errors.length ? `${errors.length} blocking row${errors.length===1?"":"s"}. Fix every error before continuing.` : valid.length ? `${valid.length} valid recipients · ${copies} physical cards ready.` : "Import valid recipient data to continue.";
+    el.errorsCsvBtn.disabled = !errors.length; el.showErrorsBtn.disabled=!errors.length; el.toCustomizeBtn.disabled = !canContinue();
+    el.validationCallout.className=`validation-callout ${blocking?"has-errors":"is-valid"}`; el.validationTitle.textContent=errors.length?`${errors.length.toLocaleString()} row${errors.length===1?"":"s"} need attention`:overLimit?"Physical card limit exceeded":valid.length?"Validation complete":"Waiting for recipient data"; el.validationMessage.textContent=errors.length?"Fix every blocking row below or download the error report for offline correction.":overLimit?`${copies.toLocaleString()} physical cards were requested. Reduce copies to ${MAX_PHYSICAL_CARDS.toLocaleString()} or fewer before continuing.`:valid.length?`${valid.length.toLocaleString()} recipients · ${copies.toLocaleString()} physical cards · ready to customize.`:"Import recipient data to begin validation."; el.showErrorsBtn.hidden=!errors.length;
+    el.importGate.textContent = errors.length ? `${errors.length} blocking row${errors.length===1?"":"s"}. Fix every error before continuing.` : overLimit?`${copies.toLocaleString()} physical cards exceeds the ${MAX_PHYSICAL_CARDS.toLocaleString()}-card prototype limit.`:valid.length ? `${valid.length.toLocaleString()} valid recipients · ${copies.toLocaleString()} physical cards ready.` : "Import valid recipient data to continue.";
     el.rowLimitNote.textContent = state.rows.length > 20 ? `Showing the first 20 of ${state.rows.length} rows. Validation and export include all rows.` : `Showing all ${state.rows.length} rows.`;
     renderRows();
   }
@@ -212,7 +242,7 @@
 
   function renderReview() {
     const rows=getValidRows(), cards=expandCards(rows), {cols,rows:rowCount,perPage}=gridInfo(); const pages=Math.ceil(cards.length/perPage);
-    el.summaryRecipients.textContent=rows.length.toLocaleString(); el.summaryCards.textContent=cards.length.toLocaleString(); el.summaryPages.textContent=pages.toLocaleString(); el.summaryPaper.textContent=`${state.config.paper.toUpperCase()} · ${cols} × ${rowCount}`; el.summaryErrors.textContent=getErrors().length; const cost=Math.max(25,Math.ceil(cards.length/100)*5); el.tokenEstimate.textContent=`${cost} demo tokens`; el.dialogCards.textContent=cards.length.toLocaleString(); el.dialogCost.textContent=`${cost} demo tokens`;
+    const blocking=blockingIssueCount(); el.summaryRecipients.textContent=rows.length.toLocaleString(); el.summaryCards.textContent=cards.length.toLocaleString(); el.summaryPages.textContent=pages.toLocaleString(); el.summaryPaper.textContent=`${state.config.paper.toUpperCase()} · ${cols} × ${rowCount}`; el.summaryErrors.textContent=blocking; el.reviewValidationStatus.className=`status-badge ${blocking?"error":"valid"}`;el.reviewValidationStatus.textContent=blocking?`! ${blocking} blocking`:`✓ Validated`; const cost=Math.max(25,Math.ceil(cards.length/100)*5); el.tokenEstimate.textContent=`${cost} demo tokens`; el.dialogCards.textContent=cards.length.toLocaleString(); el.dialogCost.textContent=`${cost} demo tokens`;
     el.pageSelect.innerHTML=Array.from({length:pages},(_,i)=>`<option value="${i}">Page ${i+1}${i===0?" · first":i===pages-1?" · last":i===Math.floor((pages-1)/2)?" · middle":""}</option>`).join("");
     renderReviewCard(); renderSheetPreview(); el.confirmMapping.checked=false; el.generateBtn.disabled=true;
   }
@@ -268,7 +298,7 @@
       const mapping=createMappingCsv(record); if(!mapping.text||mapping.count!==record.cards.length)throw new Error("Mapping CSV is incomplete");
       state.cancelLocked=true; el.cancelGenerateBtn.disabled=true; el.dialogCloseBtn.disabled=true; updateGenerationProgress(record.cards.length,record.cards.length,pages,"Finalizing both downloads…");
       const saveResult=pdf.save(`${record.batch_id}-${record.export_id}.pdf`,{returnPromise:true}); if(saveResult&&typeof saveResult.then==="function")await saveResult; downloadText(`${record.batch_id}-mapping.csv`,mapping.text,"text/csv;charset=utf-8");
-      state.currentExport=record; state.histories=state.histories.filter(h=>h.export_id!==record.export_id); state.histories.unshift(record); saveHistory(); renderHistory(); el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${record.cards.length.toLocaleString()} cards · ${pages} pages · ${record.batch_id} · No tokens deducted`; setStatus(`Export completed. PDF and mapping verified against ${record.snapshot_signature}.`); window.scrollTo({top:110,behavior:"smooth"});
+      state.currentExport=record; state.histories=state.histories.filter(h=>h.export_id!==record.export_id); state.histories.unshift(record); saveHistory(); renderHistory(); resetFeedbackForm(); el.feedbackComment.disabled=false; el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${record.cards.length.toLocaleString()} cards · ${pages} pages · ${record.batch_id} · No tokens deducted`; setStatus(`Export generated. PDF and mapping verified against ${record.snapshot_signature}; browser downloads started.`); window.scrollTo({top:110,behavior:"smooth"});
     } catch(error) {
       console.error(error); const cancelled=error.name==="ExportCancelledError", message=cancelled?"Export cancelled. No files, history or token charge were recorded.":`Export failed: ${error.message}. Your imported recipients are still available; resolve the issue and retry.`; el.dialogError.textContent=message; el.dialogError.hidden=false; setStatus(message,!cancelled); toast(cancelled?"Export cancelled safely.":"Export failed. No completed history or charge was recorded.");
     } finally { state.isGenerating=false; state.cancelLocked=false; el.confirmGenerateBtn.disabled=false; el.confirmGenerateBtn.textContent="Confirm & generate"; el.cancelGenerateBtn.disabled=false; el.cancelGenerateBtn.textContent="Cancel"; el.dialogCloseBtn.disabled=false; }
@@ -332,7 +362,7 @@
 
   function updateDemoCard(record,cardId,url,revoke){if(!revoke){try{const u=new URL(url);if(u.protocol!=="https:")throw new Error();}catch{return toast("Destination must be a valid HTTPS URL.");}}validateExportSnapshot(record);record.demo_overrides[cardId]={gallery_url:revoke?(record.demo_overrides[cardId]?.gallery_url||record.cards.find(c=>c.card_id===cardId)?.gallery_url):url,status:revoke?"Revoked":"Active"};record.audit.unshift({timestamp:new Date().toISOString(),action:revoke?"qr_revoked_demo":"destination_updated_demo",actor:"demo-user",target:cardId});saveHistory();toast(revoke?"Local revoke recorded. Locked export snapshot is unchanged.":"Local destination changed. Locked export snapshot is unchanged.");showHistoryDetail(state.histories.indexOf(record));}
 
-  function resetBatch(){state.rows=[];state.previewIndex=0;state.currentExport=null;el.urlPaste.value="";el.csvInput.value="";el.resultPanel.hidden=true;renderImport();showStep(1);setStatus("New draft batch started.");}
+  function resetBatch(){state.rows=[];state.previewIndex=0;state.currentExport=null;el.urlPaste.value="";el.csvInput.value="";el.resultPanel.hidden=true;resetFeedbackForm();el.feedbackComment.disabled=false;switchImportMode("csv");renderImport();showStep(1);setStatus("New draft batch started.");}
   function setStatus(message,error=false){el.globalStatus.textContent=message;el.globalStatus.style.color=error?"var(--red)":"var(--muted)";}
   function toast(message){el.toast.textContent=message;el.toast.classList.add("show");clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.toast.classList.remove("show"),3300);}
 
