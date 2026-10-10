@@ -56,9 +56,9 @@
     el.generateBtn.addEventListener("click", openGenerateDialog);
     el.confirmGenerateBtn.addEventListener("click", generateExport);
     el.insufficientBtn.addEventListener("click", () => toast("Simulation: insufficient balance blocks export; no tokens were deducted."));
-    el.downloadPdfBtn.addEventListener("click", () => generatePdf(state.currentExport, true));
-    el.downloadMappingBtn.addEventListener("click", () => downloadMapping(state.currentExport));
-    el.reprintBtn.addEventListener("click", () => { toast("Reprint uses the same batch, card IDs and QR values."); generatePdf(state.currentExport, true); });
+    el.downloadPdfBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.downloadPdfBtn, "Download print PDF"));
+    el.downloadMappingBtn.addEventListener("click", () => runMappingDownload(state.currentExport, el.downloadMappingBtn));
+    el.reprintBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.reprintBtn, "Reprint same export"));
     [el.historyBtn,el.viewHistoryBtn].forEach(btn => btn.addEventListener("click", showHistory));
     el.closeHistoryBtn.addEventListener("click", () => { el.historyPanel.hidden = true; showStep(state.step); });
     el.newBatchBtn.addEventListener("click", resetBatch);
@@ -256,21 +256,38 @@
       const qrSize=Math.min(cardH*.52,cardW*.34,30),qrX=x+cardW-qrSize-5,qrY=y+Math.max(5,(cardH-qrSize)/2-2),qrData=await qrDataUrl(card.qr_value,420);pdf.setFillColor(255,255,255);pdf.rect(qrX-1.5,qrY-1.5,qrSize+3,qrSize+3,"F");pdf.addImage(qrData,"PNG",qrX,qrY,qrSize,qrSize,undefined,"FAST");pdf.setTextColor(config.template==="branded"?220:70);pdf.setFontSize(4);pdf.text("SCAN TO OPEN GALLERY",qrX+qrSize/2,qrY+qrSize+3,{align:"center"});
       pdf.setTextColor(125);pdf.setFontSize(3.5);pdf.text(`${record.batch_id} · P${card.page} R${card.row} C${card.column}`,x+cardW-3,y+cardH-2.5,{align:"right"});
     }
-    if(download)pdf.save(`${record.batch_id}-${record.export_id}.pdf`); return pdf;
+    const bytes=pdf.output("arraybuffer"); if(!(bytes instanceof ArrayBuffer)||bytes.byteLength<1000)throw new Error("Generated PDF is empty or invalid");
+    if(download){const saveResult=pdf.save(`${record.batch_id}-${record.export_id}.pdf`,{returnPromise:true});if(saveResult&&typeof saveResult.then==="function")await saveResult;} return pdf;
+  }
+
+  async function runPdfDownload(record,button,idleLabel) {
+    if(!record){setStatus("Download failed: no completed export is available.",true);return toast("No completed export is available.");}
+    button.disabled=true; button.textContent="Preparing PDF…"; setStatus(`Preparing ${record.cards.length.toLocaleString()} QR cards for download…`);
+    try{await generatePdf(record,true);setStatus(`PDF downloaded: ${record.batch_id} · ${record.cards.length.toLocaleString()} cards.`);toast("PDF download started.");}
+    catch(error){console.error(error);setStatus(`PDF download failed: ${error.message}`,true);toast(`PDF download failed: ${error.message}`);}
+    finally{button.disabled=false;button.textContent=idleLabel;}
+  }
+
+  function runMappingDownload(record,button) {
+    button.disabled=true;
+    try{const count=downloadMapping(record);setStatus(`Mapping CSV downloaded: ${count.toLocaleString()} card rows.`);toast("Mapping CSV download started.");}
+    catch(error){console.error(error);setStatus(`Mapping CSV download failed: ${error.message}`,true);toast(`Mapping CSV download failed: ${error.message}`);}
+    finally{button.disabled=false;}
   }
 
   function downloadMapping(record) {
-    if(!record)return; const header=["batch_id","export_id","card_id","recipient_id","destination","page","row","column","copies","copy_number","template_version","qr_value","status"];
+    if(!record)throw new Error("No completed export is available"); const header=["batch_id","export_id","card_id","recipient_id","destination","page","row","column","copies","copy_number","template_version","qr_value","status"];
     const lines=[header,...record.cards.map(c=>[c.batch_id,c.export_id,c.card_id,c.recipient_id,c.gallery_url,c.page,c.row,c.column,c.copies,c.copy_number,c.template_version,c.qr_value,c.status||"Active"])]; downloadText(`${record.batch_id}-mapping.csv`,toCsv(lines),"text/csv;charset=utf-8");
+    return record.cards.length;
   }
 
   function toCsv(rows) { return "\uFEFF"+rows.map(row=>row.map(csvCell).join(",")).join("\r\n"); }
   function csvCell(value) { let text=String(value??""); if(/^[=+\-@\t\r]/.test(text))text="'"+text; return `"${text.replaceAll('"','""')}"`; }
-  function downloadText(name,text,type) { const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000); }
+  function downloadText(name,text,type) { const blob=new Blob([text],{type});if(!blob.size)throw new Error("Generated file is empty");const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.style.display="none";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000); }
 
   function loadHistory(){try{return JSON.parse(localStorage.getItem("printcart_bulk_qr_history")||"[]");}catch{return[]}}
   function saveHistory(){try{localStorage.setItem("printcart_bulk_qr_history",JSON.stringify(state.histories.slice(0,8)));}catch{toast("Browser storage is full; history was not persisted.");}}
-  function renderHistory(){el.historyCount.textContent=state.histories.length;el.historyEmpty.hidden=state.histories.length>0;el.historyList.innerHTML=state.histories.map((r,i)=>`<article class="history-item"><div><strong>${escapeHtml(r.batch_id)}</strong><small>${new Date(r.created_at).toLocaleString()}</small><span class="status-badge valid">✓ ${escapeHtml(r.status)}</span></div><div><small>Recipients</small><strong>${r.recipients.length}</strong></div><div><small>Cards</small><strong>${r.cards.length}</strong></div><div><small>Export</small><strong>v${r.version}</strong></div><div class="history-actions"><button class="btn compact secondary" data-history-open="${i}">Inspect</button><button class="btn compact secondary" data-history-pdf="${i}">PDF</button><button class="btn compact secondary" data-history-csv="${i}">CSV</button></div></article>`).join("");$$('[data-history-open]',el.historyList).forEach(b=>b.addEventListener("click",()=>showHistoryDetail(Number(b.dataset.historyOpen))));$$('[data-history-pdf]',el.historyList).forEach(b=>b.addEventListener("click",()=>generatePdf(state.histories[Number(b.dataset.historyPdf)],true).catch(e=>toast(e.message))));$$('[data-history-csv]',el.historyList).forEach(b=>b.addEventListener("click",()=>downloadMapping(state.histories[Number(b.dataset.historyCsv)])));}
+  function renderHistory(){el.historyCount.textContent=state.histories.length;el.historyEmpty.hidden=state.histories.length>0;el.historyList.innerHTML=state.histories.map((r,i)=>`<article class="history-item"><div><strong>${escapeHtml(r.batch_id)}</strong><small>${new Date(r.created_at).toLocaleString()}</small><span class="status-badge valid">✓ ${escapeHtml(r.status)}</span></div><div><small>Recipients</small><strong>${r.recipients.length}</strong></div><div><small>Cards</small><strong>${r.cards.length}</strong></div><div><small>Export</small><strong>v${r.version}</strong></div><div class="history-actions"><button class="btn compact secondary" data-history-open="${i}">Inspect</button><button class="btn compact secondary" data-history-pdf="${i}">PDF</button><button class="btn compact secondary" data-history-csv="${i}">CSV</button></div></article>`).join("");$$('[data-history-open]',el.historyList).forEach(b=>b.addEventListener("click",()=>showHistoryDetail(Number(b.dataset.historyOpen))));$$('[data-history-pdf]',el.historyList).forEach(b=>b.addEventListener("click",()=>runPdfDownload(state.histories[Number(b.dataset.historyPdf)],b,"PDF")));$$('[data-history-csv]',el.historyList).forEach(b=>b.addEventListener("click",()=>runMappingDownload(state.histories[Number(b.dataset.historyCsv)],b)));}
 
   function showHistory(){el.resultPanel.hidden=true;$$('[data-panel]').forEach(p=>p.hidden=true);el.historyPanel.hidden=false;renderHistory();window.scrollTo({top:110,behavior:"smooth"});}
   function showHistoryDetail(index){const record=state.histories[index];el.historyDetail.hidden=false;el.historyDetail.className="history-detail";el.historyDetail.innerHTML=`<div class="history-detail-head"><div><p class="step-label">BROWSER-LOCAL SIMULATION</p><h3>${escapeHtml(record.batch_id)}</h3><p>Printed direct URLs cannot be changed by these controls.</p></div><button class="text-link" id="closeDetail">Close</button></div><div class="history-search"><input id="cardSearch" type="search" placeholder="Search card ID or recipient ID"><button class="btn compact secondary" id="cardSearchBtn">Search</button></div><div id="cardRecords"></div><h3>Audit events</h3><ul class="audit-list">${record.audit.map(a=>`<li>${new Date(a.timestamp).toLocaleString()} · ${escapeHtml(a.actor)} · ${escapeHtml(a.action)} · ${escapeHtml(a.target)}</li>`).join("")}</ul>`;$("#closeDetail").onclick=()=>el.historyDetail.hidden=true;const draw=()=>{const q=$("#cardSearch").value.trim().toLowerCase();const cards=[...new Map(record.cards.map(c=>[c.card_id,c])).values()].filter(c=>!q||c.card_id.toLowerCase().includes(q)||c.recipient_id.toLowerCase().includes(q)).slice(0,20);$("#cardRecords").innerHTML=cards.map(c=>`<div class="card-record"><div><strong>${escapeHtml(c.card_id)}</strong><small>${escapeHtml(c.recipient_id)} · <span class="status-badge ${c.status==="Revoked"?"error":"valid"}">${escapeHtml(c.status||"Active")}</span></small></div><input value="${escapeAttr(c.gallery_url)}" aria-label="Demo destination for ${escapeAttr(c.card_id)}"><div class="record-actions"><button class="btn compact secondary" data-update-card="${escapeAttr(c.card_id)}">Change destination</button><button class="btn compact secondary" data-revoke-card="${escapeAttr(c.card_id)}">Revoke</button></div></div>`).join("")||"<p>No matching card.</p>";$$('[data-update-card]',el.historyDetail).forEach(b=>b.onclick=()=>updateDemoCard(record,b.dataset.updateCard,b.closest(".card-record").querySelector("input").value,false));$$('[data-revoke-card]',el.historyDetail).forEach(b=>b.onclick=()=>updateDemoCard(record,b.dataset.revokeCard,"",true));};$("#cardSearchBtn").onclick=draw;$("#cardSearch").oninput=draw;draw();}
