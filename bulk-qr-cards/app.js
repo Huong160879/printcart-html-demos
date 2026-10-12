@@ -86,6 +86,7 @@
     el.downloadMappingBtn.addEventListener("click", () => runMappingDownload(state.currentExport, el.downloadMappingBtn));
     el.reprintBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.reprintBtn, "Reprint same export"));
     $$('[data-rating]',el.feedbackStars).forEach(button => button.addEventListener("click", () => selectFeedbackRating(Number(button.dataset.rating))));
+    el.feedbackComment.addEventListener("input", updateFeedbackAvailability);
     el.submitFeedbackBtn.addEventListener("click", submitFeedback);
     [el.historyBtn,el.viewHistoryBtn].forEach(btn => btn.addEventListener("click", showHistory));
     el.closeHistoryBtn.addEventListener("click", () => { el.historyPanel.hidden = true; showStep(state.step); });
@@ -216,15 +217,22 @@
   }
 
   function selectFeedbackRating(rating) {
-    state.feedbackRating=rating; $$('[data-rating]',el.feedbackStars).forEach(button=>{const selected=Number(button.dataset.rating)<=rating;button.classList.toggle("selected",selected);button.setAttribute("aria-checked",String(Number(button.dataset.rating)===rating));}); el.submitFeedbackBtn.disabled=false; el.feedbackStatus.textContent=`${rating} of 5 selected`;
+    state.feedbackRating=rating; $$('[data-rating]',el.feedbackStars).forEach(button=>{const selected=Number(button.dataset.rating)<=rating;button.classList.toggle("selected",selected);button.setAttribute("aria-checked",String(Number(button.dataset.rating)===rating));}); updateFeedbackAvailability();
+  }
+
+  function updateFeedbackAvailability() {
+    const hasRating=state.feedbackRating>0;
+    const hasComment=el.feedbackComment.value.trim().length>0;
+    el.submitFeedbackBtn.disabled=!(hasRating||hasComment);
+    el.feedbackStatus.textContent=hasRating?`${state.feedbackRating} of 5 selected`:(hasComment?"Comment ready to submit":"");
   }
 
   function resetFeedbackForm() {
-    state.feedbackRating=0; el.feedbackComment.value=""; el.feedbackStatus.textContent=""; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>{button.classList.remove("selected");button.setAttribute("aria-checked","false");button.disabled=false;});
+    state.feedbackRating=0; el.feedbackComment.value=""; el.feedbackComment.disabled=false; el.feedbackStatus.textContent=""; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>{button.classList.remove("selected");button.setAttribute("aria-checked","false");button.disabled=false;});
   }
 
   function submitFeedback() {
-    if(!state.feedbackRating)return; const entry={rating:state.feedbackRating,comment:el.feedbackComment.value.trim(),batch_id:state.currentExport?.batch_id||"",created_at:new Date().toISOString()}; try{const saved=JSON.parse(localStorage.getItem("printcart_bulk_qr_feedback")||"[]");saved.unshift(entry);localStorage.setItem("printcart_bulk_qr_feedback",JSON.stringify(saved.slice(0,20)));}catch{el.feedbackStatus.textContent="Feedback could not be saved in this browser. You can retry.";return toast("Feedback was not saved. Browser storage is unavailable.");} el.feedbackStatus.textContent="Thank you — feedback saved in this browser."; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>button.disabled=true); el.feedbackComment.disabled=true; toast("Thank you for your feedback.");
+    const comment=el.feedbackComment.value.trim(); if(!state.feedbackRating&&!comment)return; const entry={rating:state.feedbackRating||null,comment,batch_id:state.currentExport?.batch_id||"",created_at:new Date().toISOString()}; try{const saved=JSON.parse(localStorage.getItem("printcart_bulk_qr_feedback")||"[]");saved.unshift(entry);localStorage.setItem("printcart_bulk_qr_feedback",JSON.stringify(saved.slice(0,20)));}catch{el.feedbackStatus.textContent="Feedback could not be saved in this browser. You can retry.";return toast("Feedback was not saved. Browser storage is unavailable.");} el.feedbackStatus.textContent="Thank you — feedback saved in this browser."; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>button.disabled=true); el.feedbackComment.disabled=true; toast("Thank you for your feedback.");
   }
 
   function parseCsv(text) {
