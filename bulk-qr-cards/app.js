@@ -23,7 +23,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","validationCallout","validationTitle","validationMessage","showErrorsBtn","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","reviewValidationStatus","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","feedbackPanel","feedbackStars","feedbackComment","feedbackStatus","submitFeedbackBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
+    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","validationCallout","validationTitle","validationMessage","showErrorsBtn","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","defaultLabelWarning","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","previewRecipientSearch","previewRecipientOptions","previewRecipientGo","previewSearchHint","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","reviewValidationStatus","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","feedbackPanel","feedbackStars","feedbackComment","feedbackStatus","submitFeedbackBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
     bindEvents();
     renderHistory();
     updateStepper();
@@ -52,6 +52,9 @@
     [el.studioName,el.defaultLabel,el.accentColor,el.paperSize,el.gridPreset].forEach(input => input.addEventListener("input", syncConfig));
     el.logoInput.addEventListener("change", readLogo);
     el.nextPreviewBtn.addEventListener("click", () => { const valid = getValidRows(); state.previewIndex = valid.length ? (state.previewIndex + 1) % valid.length : 0; renderCardPreview(); });
+    el.previewRecipientGo.addEventListener("click", previewRecipientFromSearch);
+    el.previewRecipientSearch.addEventListener("change", previewRecipientFromSearch);
+    el.previewRecipientSearch.addEventListener("keydown", event => { if(event.key==="Enter"){event.preventDefault();previewRecipientFromSearch();} });
     el.toReviewBtn.addEventListener("click", () => showStep(3));
     $("#cardTab").addEventListener("click", () => switchReviewTab("card"));
     $("#sheetTab").addEventListener("click", () => switchReviewTab("sheet"));
@@ -196,8 +199,8 @@
   function renderRows() {
     const filtered = state.rows.map((row,index)=>({row,index})).filter(({row}) => state.filter === "all" || (state.filter === "valid" ? !Object.keys(row._errors).length : Object.keys(row._errors).length)).slice(0,20);
     el.recipientRows.innerHTML = filtered.map(({row,index}) => {
-      const err = row._errors; const input = (field,value,type="text") => `<input type="${type}" data-index="${index}" data-field="${field}" class="${err[field]?"invalid":""}" value="${escapeAttr(value)}" aria-label="${field.replaceAll("_"," ")} row ${row._sourceRow}" ${err[field]?`aria-describedby="err-${index}-${field}"`:""}>${err[field]?`<span class="cell-error" id="err-${index}-${field}">${escapeHtml(err[field])}</span>`:""}`;
-      return `<tr><td class="row-number">${row._sourceRow}</td><td>${input("recipient_id",row.recipient_id)}</td><td>${input("gallery_url",row.gallery_url,"url")}</td><td><div class="row-name">${input("recipient_name",row.recipient_name)}${input("group_name",row.group_name)}</div></td><td>${input("card_label",row.card_label)}</td><td>${input("copies",row.copies,"number")}</td><td>${input("sort_order",row.sort_order,"number")}</td><td><span class="status-badge ${Object.keys(err).length?"error":"valid"}">${Object.keys(err).length?`! ${Object.keys(err).length} error${Object.keys(err).length===1?"":"s"}`:"✓ Valid"}</span></td><td><button class="icon-btn" type="button" data-remove="${index}" aria-label="Remove row ${row._sourceRow}">×</button></td></tr>`;
+      const err = row._errors, hasErrors=Object.keys(err).length>0; const input = (field,value,type="text",extraClass="") => `<input type="${type}" data-index="${index}" data-field="${field}" class="${[extraClass,err[field]?"invalid":""].filter(Boolean).join(" ")}" value="${escapeAttr(value)}" ${field==="gallery_url"?`title="${escapeAttr(value)}"`:""} aria-label="${field.replaceAll("_"," ")} row ${row._sourceRow}" aria-invalid="${err[field]?"true":"false"}" ${err[field]?`aria-describedby="err-${index}-${field}"`:""}>${err[field]?`<span class="cell-error" id="err-${index}-${field}">${escapeHtml(err[field])}</span>`:""}`;
+      return `<tr class="${hasErrors?"has-row-errors":""}"><td class="row-number">${row._sourceRow}</td><td>${input("recipient_id",row.recipient_id)}</td><td>${input("gallery_url",row.gallery_url,"url","url-field")}</td><td><div class="row-name">${input("recipient_name",row.recipient_name)}${input("group_name",row.group_name)}</div></td><td>${input("card_label",row.card_label)}</td><td>${input("copies",row.copies,"number")}</td><td>${input("sort_order",row.sort_order,"number")}</td><td><span class="status-badge ${hasErrors?"error":"valid"}">${hasErrors?`! ${Object.keys(err).length} error${Object.keys(err).length===1?"":"s"}`:"✓ Valid"}</span></td><td><button class="icon-btn" type="button" data-remove="${index}" aria-label="Remove row ${row._sourceRow}">×</button></td></tr>`;
     }).join("") || `<tr><td colspan="9">No rows match this filter.</td></tr>`;
   }
 
@@ -224,18 +227,26 @@
 
   function updateTemplateSelection() { $$(".template-option").forEach(label => label.classList.toggle("selected", $("input",label).checked)); }
 
+  function populatePreviewRecipientOptions() {
+    const valid=getValidRows(); el.previewRecipientOptions.innerHTML=valid.map(row=>`<option value="${escapeAttr(row.recipient_id)}">${escapeHtml([row.recipient_name,row.group_name].filter(Boolean).join(" · ")||row.gallery_url)}</option>`).join(""); el.previewSearchHint.textContent=`Search ${valid.length.toLocaleString()} valid recipient${valid.length===1?"":"s"} by ID, name or group.`;
+  }
+
+  function previewRecipientFromSearch() {
+    const query=el.previewRecipientSearch.value.trim().toLowerCase(), valid=getValidRows(); if(!query)return; const searchable=row=>[row.recipient_id,row.recipient_name,row.group_name].filter(Boolean).map(value=>value.toLowerCase()), match=valid.find(row=>row.recipient_id.toLowerCase()===query)||valid.find(row=>searchable(row).some(value=>value.includes(query))); if(!match){el.previewSearchHint.textContent=`No valid recipient matches “${el.previewRecipientSearch.value.trim()}”.`;return toast("No matching valid recipient found.");} state.previewIndex=valid.indexOf(match); el.previewSearchHint.textContent=`Showing ${match.recipient_id}${match.recipient_name?` · ${match.recipient_name}`:""}.`; renderCardPreview(match);
+  }
+
   async function renderCardPreview(rowOverride) {
     const valid = getValidRows(); const row = rowOverride || valid[state.previewIndex] || valid[0]; if (!row) return;
     el.cardPreview.className = `qr-card template-${state.config.template}`; el.cardPreview.style.setProperty("--accent",state.config.accent);
-    el.studioPreview.textContent = state.config.studio; el.cardLabelPreview.textContent = row.card_label || state.config.label; el.recipientPreview.textContent = [row.recipient_name,row.group_name].filter(Boolean).join(" · ") || row.recipient_id; el.cardKicker.textContent = state.config.template === "school" ? "YOUR SCHOOL PHOTOS" : "PHOTO GALLERY"; el.previewUrl.textContent = row.gallery_url; el.previewIdentity.textContent = row.recipient_id;
+    const labelText=row.card_label||state.config.label,isLong=labelText.length>54,defaultLong=state.config.label.length>54; el.studioPreview.textContent = state.config.studio; el.cardLabelPreview.textContent = labelText; el.recipientPreview.textContent = [row.recipient_name,row.group_name].filter(Boolean).join(" · ") || row.recipient_id; el.cardKicker.textContent = state.config.template === "school" ? "YOUR SCHOOL PHOTOS" : "PHOTO GALLERY"; el.previewUrl.textContent = row.gallery_url; el.previewIdentity.textContent = row.recipient_id; el.previewRecipientSearch.value=row.recipient_id; el.previewSearchHint.textContent=`Showing ${row.recipient_id}${row.recipient_name?` · ${row.recipient_name}`:""}. Search by ID, name or group.`; el.cardPreview.classList.toggle("label-risk",isLong); el.defaultLabelWarning.hidden=!defaultLong; el.defaultLabelWarning.textContent=defaultLong?`${state.config.label.length}/90 characters — this may wrap tightly in the highlighted card copy area.`:"";
     el.logoPreview.hidden = !state.logoData; $(".studio-mark",el.cardPreview).hidden = Boolean(state.logoData); if(state.logoData) el.logoPreview.src = state.logoData;
-    el.longLabelWarning.hidden = (row.card_label || state.config.label).length <= 54;
+    el.longLabelWarning.hidden = !isLong;
     await drawQr(el.qrCanvas,row.gallery_url,220);
   }
 
   function showStep(step) {
     state.step = step; el.resultPanel.hidden = true; el.historyPanel.hidden = true; $$('[data-panel]').forEach(panel => panel.hidden = Number(panel.dataset.panel) !== step); updateStepper();
-    if (step === 2) renderCardPreview(); if (step === 3) renderReview(); window.scrollTo({top:110,behavior:"smooth"});
+    if (step === 2){populatePreviewRecipientOptions();renderCardPreview();} if (step === 3) renderReview(); window.scrollTo({top:110,behavior:"smooth"});
   }
 
   function updateStepper() { $$(".stepper li").forEach(li => { const n=Number(li.dataset.step); li.classList.toggle("active",n===state.step); li.classList.toggle("complete",n<state.step); if(n===state.step) li.querySelector("button").setAttribute("aria-current","step"); else li.querySelector("button").removeAttribute("aria-current"); }); }
