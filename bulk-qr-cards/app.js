@@ -12,6 +12,8 @@
 
   const $ = (selector, scope = document) => scope.querySelector(selector);
   const $$ = (selector, scope = document) => [...scope.querySelectorAll(selector)];
+  let historyStorageError = "";
+  let pdfFontDataPromise = null;
   const state = {
     rows: [], filter: "all", step: 1, previewIndex: 0, logoData: "", currentExport: null, importMode: "csv", feedbackRating: 0,
     isGenerating: false, cancelRequested: false, cancelLocked: false,
@@ -27,6 +29,7 @@
     bindEvents();
     renderHistory();
     updateStepper();
+    if(historyStorageError)setStatus(historyStorageError,true);
   }
 
   function bindEvents() {
@@ -60,7 +63,7 @@
     $("#sheetTab").addEventListener("click", () => switchReviewTab("sheet"));
     el.reviewRecipient.addEventListener("change", renderReviewCard);
     el.pageSelect.addEventListener("change", renderSheetPreview);
-    el.confirmMapping.addEventListener("change", () => el.generateBtn.disabled = !el.confirmMapping.checked || !canContinue());
+    el.confirmMapping.addEventListener("change", updateGenerateAvailability);
     el.generateBtn.addEventListener("click", openGenerateDialog);
     el.confirmGenerateBtn.addEventListener("click", generateExport);
     [el.cancelGenerateBtn,el.dialogCloseBtn].forEach(button => button.addEventListener("click", cancelGenerationOrClose));
@@ -96,40 +99,41 @@
   }
 
   function submitFeedback() {
-    if(!state.feedbackRating)return; const entry={rating:state.feedbackRating,comment:el.feedbackComment.value.trim(),batch_id:state.currentExport?.batch_id||"",created_at:new Date().toISOString()}; try{const saved=JSON.parse(localStorage.getItem("printcart_bulk_qr_feedback")||"[]");saved.unshift(entry);localStorage.setItem("printcart_bulk_qr_feedback",JSON.stringify(saved.slice(0,20)));}catch{return toast("Feedback could not be saved in this browser.");} el.feedbackStatus.textContent="Thank you — feedback saved in this browser."; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>button.disabled=true); el.feedbackComment.disabled=true; toast("Thank you for your feedback.");
+    if(!state.feedbackRating)return; const entry={rating:state.feedbackRating,comment:el.feedbackComment.value.trim(),batch_id:state.currentExport?.batch_id||"",created_at:new Date().toISOString()}; try{const saved=JSON.parse(localStorage.getItem("printcart_bulk_qr_feedback")||"[]");saved.unshift(entry);localStorage.setItem("printcart_bulk_qr_feedback",JSON.stringify(saved.slice(0,20)));}catch{el.feedbackStatus.textContent="Feedback could not be saved in this browser. You can retry.";return toast("Feedback was not saved. Browser storage is unavailable.");} el.feedbackStatus.textContent="Thank you — feedback saved in this browser."; el.submitFeedbackBtn.disabled=true; $$('[data-rating]',el.feedbackStars).forEach(button=>button.disabled=true); el.feedbackComment.disabled=true; toast("Thank you for your feedback.");
   }
 
   function parseCsv(text) {
     text = text.replace(/^\uFEFF/, "");
-    const records = []; let row = [], cell = "", quoted = false;
+    const records = []; let row = [], cell = "", quoted = false, line = 1, rowStartLine = 1;
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
       if (quoted) {
         if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
         else if (ch === '"') quoted = false;
-        else cell += ch;
+        else { cell += ch; if (ch === "\n") line++; }
       } else if (ch === '"') quoted = true;
       else if (ch === ',') { row.push(cell); cell = ""; }
-      else if (ch === '\n') { row.push(cell.replace(/\r$/, "")); if (row.some(v => v.trim() !== "")) records.push(row); row = []; cell = ""; }
+      else if (ch === '\n') { row.push(cell.replace(/\r$/, "")); if (row.some(v => v.trim() !== "")) records.push({values:row,line:rowStartLine}); row = []; cell = ""; line++; rowStartLine=line; }
       else cell += ch;
     }
     if (quoted) throw new Error("CSV contains an unclosed quoted field");
-    row.push(cell.replace(/\r$/, "")); if (row.some(v => v.trim() !== "")) records.push(row);
+    row.push(cell.replace(/\r$/, "")); if (row.some(v => v.trim() !== "")) records.push({values:row,line:rowStartLine});
     if (!records.length) return [];
-    const headers = records.shift().map(h => h.trim().toLowerCase());
+    const headers = records.shift().values.map(h => h.trim().toLowerCase());
     const missing = ["recipient_id", "gallery_url"].filter(h => !headers.includes(h));
     if (missing.length) throw new Error(`Missing required column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}`);
     const duplicateHeaders = headers.filter((header,index) => header && headers.indexOf(header) !== index);
     if (duplicateHeaders.length) throw new Error(`Duplicate column name: ${[...new Set(duplicateHeaders)].join(", ")}`);
     if (records.length > MAX_RECIPIENTS) throw new Error(`CSV has ${records.length.toLocaleString()} data rows; this prototype accepts at most ${MAX_RECIPIENTS.toLocaleString()}. No rows were imported.`);
-    return records.map((values, index) => {
-      const item = blankRow(index + 2);
+    return records.map(record => {
+      const values=record.values, item = blankRow(record.line);
+      if(values.length!==headers.length)item._csvColumnError=`Malformed CSV row: expected ${headers.length} columns but found ${values.length}`;
       headers.forEach((header, i) => { if (fields.includes(header)) item[header] = (values[i] || "").trim(); });
       return item;
     });
   }
 
-  function blankRow(sourceRow) { return { recipient_id:"",gallery_url:"",recipient_name:"",group_name:"",card_label:"",access_code:"",copies:"1",sort_order:String(Math.max(1, sourceRow - 1)),_sourceRow:sourceRow,_errors:{} }; }
+  function blankRow(sourceRow) { return { recipient_id:"",gallery_url:"",recipient_name:"",group_name:"",card_label:"",access_code:"",copies:"1",sort_order:String(Math.max(1, sourceRow - 1)),_sourceRow:sourceRow,_csvColumnError:"",_errors:{} }; }
 
   function readCsvFile(file) {
     if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") return setStatus("Choose a .csv file.", true);
@@ -163,6 +167,7 @@
     state.rows.forEach(row => { const id = row.recipient_id.trim(); if (id) counts.set(id, (counts.get(id) || 0) + 1); });
     state.rows.forEach(row => {
       const errors = {};
+      if(row._csvColumnError)errors._row=row._csvColumnError;
       if (!row.recipient_id.trim()) errors.recipient_id = "Recipient ID is required";
       else if (counts.get(row.recipient_id.trim()) > 1) errors.recipient_id = "Duplicate recipient ID";
       if (!row.gallery_url.trim()) errors.gallery_url = "Gallery URL is required";
@@ -182,7 +187,7 @@
   function blockingIssueCount() { return getErrors().length + (exceedsCardLimit()?1:0); }
   function canContinue() { return state.rows.length > 0 && blockingIssueCount() === 0 && getValidRows().length > 0; }
 
-  function renderImport() {
+  function renderImport(renderTable=true) {
     el.emptyState.hidden = state.rows.length > 0; el.dataArea.hidden = state.rows.length === 0;
     const valid = getValidRows(), errors = getErrors(), copies = totalCards(valid), overLimit=copies>MAX_PHYSICAL_CARDS, blocking=errors.length+(overLimit?1:0);
     el.validationSummary.innerHTML = tile("Imported rows",state.rows.length)+tile("Valid rows",valid.length,"good")+tile("Blocking issues",blocking,blocking?"bad":"good")+tile("Physical cards",copies,overLimit?"bad":"");
@@ -191,7 +196,7 @@
     el.validationCallout.className=`validation-callout ${blocking?"has-errors":"is-valid"}`; el.validationTitle.textContent=errors.length?`${errors.length.toLocaleString()} row${errors.length===1?"":"s"} need attention`:overLimit?"Physical card limit exceeded":valid.length?"Validation complete":"Waiting for recipient data"; el.validationMessage.textContent=errors.length?"Fix every blocking row below or download the error report for offline correction.":overLimit?`${copies.toLocaleString()} physical cards were requested. Reduce copies to ${MAX_PHYSICAL_CARDS.toLocaleString()} or fewer before continuing.`:valid.length?`${valid.length.toLocaleString()} recipients · ${copies.toLocaleString()} physical cards · ready to customize.`:"Import recipient data to begin validation."; el.showErrorsBtn.hidden=!errors.length;
     el.importGate.textContent = errors.length ? `${errors.length} blocking row${errors.length===1?"":"s"}. Fix every error before continuing.` : overLimit?`${copies.toLocaleString()} physical cards exceeds the ${MAX_PHYSICAL_CARDS.toLocaleString()}-card prototype limit.`:valid.length ? `${valid.length.toLocaleString()} valid recipients · ${copies.toLocaleString()} physical cards ready.` : "Import valid recipient data to continue.";
     el.rowLimitNote.textContent = state.rows.length > 20 ? `Showing the first 20 of ${state.rows.length} rows. Validation and export include all rows.` : `Showing all ${state.rows.length} rows.`;
-    renderRows();
+    if(renderTable)renderRows();else refreshRenderedRowValidation();
   }
 
   function tile(label,value,kind="") { return `<div class="summary-tile ${kind}"><span>${escapeHtml(label)}</span><strong>${Number(value).toLocaleString()}</strong></div>`; }
@@ -200,13 +205,23 @@
     const filtered = state.rows.map((row,index)=>({row,index})).filter(({row}) => state.filter === "all" || (state.filter === "valid" ? !Object.keys(row._errors).length : Object.keys(row._errors).length)).slice(0,20);
     el.recipientRows.innerHTML = filtered.map(({row,index}) => {
       const err = row._errors, hasErrors=Object.keys(err).length>0; const input = (field,value,type="text",extraClass="") => `<input type="${type}" data-index="${index}" data-field="${field}" class="${[extraClass,err[field]?"invalid":""].filter(Boolean).join(" ")}" value="${escapeAttr(value)}" ${field==="gallery_url"?`title="${escapeAttr(value)}"`:""} aria-label="${field.replaceAll("_"," ")} row ${row._sourceRow}" aria-invalid="${err[field]?"true":"false"}" ${err[field]?`aria-describedby="err-${index}-${field}"`:""}>${err[field]?`<span class="cell-error" id="err-${index}-${field}">${escapeHtml(err[field])}</span>`:""}`;
-      return `<tr class="${hasErrors?"has-row-errors":""}"><td class="row-number">${row._sourceRow}</td><td>${input("recipient_id",row.recipient_id)}</td><td>${input("gallery_url",row.gallery_url,"url","url-field")}</td><td><div class="row-name">${input("recipient_name",row.recipient_name)}${input("group_name",row.group_name)}</div></td><td>${input("card_label",row.card_label)}</td><td>${input("copies",row.copies,"number")}</td><td>${input("sort_order",row.sort_order,"number")}</td><td><span class="status-badge ${hasErrors?"error":"valid"}">${hasErrors?`! ${Object.keys(err).length} error${Object.keys(err).length===1?"":"s"}`:"✓ Valid"}</span></td><td><button class="icon-btn" type="button" data-remove="${index}" aria-label="Remove row ${row._sourceRow}">×</button></td></tr>`;
+      const messages=Object.values(err).join(" · ");
+      return `<tr class="${hasErrors?"has-row-errors":""}"><td class="row-number">${row._sourceRow}${err._row?`<span class="cell-error">${escapeHtml(err._row)}</span>`:""}</td><td>${input("recipient_id",row.recipient_id)}</td><td>${input("gallery_url",row.gallery_url,"url","url-field")}</td><td><div class="row-name">${input("recipient_name",row.recipient_name)}${input("group_name",row.group_name)}</div></td><td>${input("card_label",row.card_label)}</td><td>${input("copies",row.copies,"number")}</td><td>${input("sort_order",row.sort_order,"number")}</td><td><span class="status-badge ${hasErrors?"error":"valid"}" title="${escapeAttr(messages)}">${hasErrors?`! ${Object.keys(err).length} error${Object.keys(err).length===1?"":"s"}`:"✓ Valid"}</span></td><td><button class="icon-btn" type="button" data-remove="${index}" aria-label="Remove row ${row._sourceRow}">×</button></td></tr>`;
     }).join("") || `<tr><td colspan="9">No rows match this filter.</td></tr>`;
+  }
+
+  function refreshRenderedRowValidation(){
+    $$('tr',el.recipientRows).forEach(tr=>{
+      const first=tr.querySelector('[data-index]');if(!first)return;const index=Number(first.dataset.index),row=state.rows[index];if(!row)return;const err=row._errors,hasErrors=Object.keys(err).length>0;
+      tr.classList.toggle("has-row-errors",hasErrors);
+      $$('[data-field]',tr).forEach(input=>{const message=err[input.dataset.field]||"",id=`err-${index}-${input.dataset.field}`;input.classList.toggle("invalid",Boolean(message));input.setAttribute("aria-invalid",String(Boolean(message)));if(input.dataset.field==="gallery_url")input.title=input.value;if(message)input.setAttribute("aria-describedby",id);else input.removeAttribute("aria-describedby");let note=input.nextElementSibling?.classList.contains("cell-error")?input.nextElementSibling:null;if(message){if(!note){note=document.createElement("span");note.className="cell-error";input.insertAdjacentElement("afterend",note);}note.id=id;note.textContent=message;}else note?.remove();});
+      const badge=tr.querySelector(".status-badge");if(badge){badge.className=`status-badge ${hasErrors?"error":"valid"}`;badge.textContent=hasErrors?`! ${Object.keys(err).length} error${Object.keys(err).length===1?"":"s"}`:"✓ Valid";badge.title=Object.values(err).join(" · ");}
+    });
   }
 
   function editCell(e) {
     const input = e.target.closest("[data-field]"); if (!input) return;
-    state.rows[Number(input.dataset.index)][input.dataset.field] = input.value; validateRows(); renderImport();
+    state.rows[Number(input.dataset.index)][input.dataset.field] = input.value; validateRows(); renderImport(false);
   }
 
   function downloadErrors() {
@@ -253,9 +268,9 @@
 
   function renderReview() {
     const rows=getValidRows(), cards=expandCards(rows), {cols,rows:rowCount,perPage}=gridInfo(); const pages=Math.ceil(cards.length/perPage);
-    const blocking=blockingIssueCount(); el.summaryRecipients.textContent=rows.length.toLocaleString(); el.summaryCards.textContent=cards.length.toLocaleString(); el.summaryPages.textContent=pages.toLocaleString(); el.summaryPaper.textContent=`${state.config.paper.toUpperCase()} · ${cols} × ${rowCount}`; el.summaryErrors.textContent=blocking; el.reviewValidationStatus.className=`status-badge ${blocking?"error":"valid"}`;el.reviewValidationStatus.textContent=blocking?`! ${blocking} blocking`:`✓ Validated`; const cost=Math.max(25,Math.ceil(cards.length/100)*5); el.tokenEstimate.textContent=`${cost} demo tokens`; el.dialogCards.textContent=cards.length.toLocaleString(); el.dialogCost.textContent=`${cost} demo tokens`;
+    const preflight=getExportPreflightIssues(rows),blocking=blockingIssueCount()+preflight.length; el.summaryRecipients.textContent=rows.length.toLocaleString(); el.summaryCards.textContent=cards.length.toLocaleString(); el.summaryPages.textContent=pages.toLocaleString(); el.summaryPaper.textContent=`${state.config.paper.toUpperCase()} · ${cols} × ${rowCount}`; el.summaryErrors.textContent=blocking; el.reviewValidationStatus.className=`status-badge ${blocking?"error":"valid"}`;el.reviewValidationStatus.textContent=blocking?`! ${blocking} blocking`:`✓ Validated`;el.reviewValidationStatus.title=preflight[0]?.message||""; const cost=Math.max(25,Math.ceil(cards.length/100)*5); el.tokenEstimate.textContent=`${cost} demo tokens`; el.dialogCards.textContent=cards.length.toLocaleString(); el.dialogCost.textContent=`${cost} demo tokens`;
     el.pageSelect.innerHTML=Array.from({length:pages},(_,i)=>`<option value="${i}">Page ${i+1}${i===0?" · first":i===pages-1?" · last":i===Math.floor((pages-1)/2)?" · middle":""}</option>`).join("");
-    renderReviewCard(); renderSheetPreview(); el.confirmMapping.checked=false; el.generateBtn.disabled=true;
+    renderReviewCard(); renderSheetPreview(); el.confirmMapping.checked=false; el.generateBtn.disabled=true;if(preflight.length)setStatus(`Review blocked: ${preflight[0].message}.`,true);
   }
 
   function reviewRow() { const rows=getValidRows(); if(!rows.length)return null; if(el.reviewRecipient.value==="last")return rows.at(-1); if(el.reviewRecipient.value==="longest")return [...rows].sort((a,b)=>(b.card_label||state.config.label).length-(a.card_label||state.config.label).length)[0]; return rows[0]; }
@@ -273,10 +288,23 @@
   function switchReviewTab(tab) { const card=tab==="card"; $("#cardTab").setAttribute("aria-selected",card); $("#sheetTab").setAttribute("aria-selected",!card); $("#cardReviewPanel").hidden=!card; $("#sheetReviewPanel").hidden=card; if(!card)renderSheetPreview(); }
 
   function gridInfo(config=state.config) { const [cols,rows]=config.grid.split("x").map(Number); return {cols,rows,perPage:cols*rows}; }
+  function printMetrics(config=state.config){const info=gridInfo(config),isA4=config.paper==="a4",pageW=isA4?210:215.9,pageH=isA4?297:279.4,margin=10,gap=3,cardW=(pageW-margin*2-gap*(info.cols-1))/info.cols,cardH=(pageH-margin*2-gap*(info.rows-1))/info.rows,qrSize=Math.min(cardH*.52,cardW*.34,30);return {...info,pageW,pageH,margin,gap,cardW,cardH,qrSize};}
+  function estimatedTextWidthMm(value,fontPt){return [...String(value??"").normalize("NFC")].reduce((sum,char)=>sum+(char===" "?.28:/[ilI1.,'`]/.test(char)?.3:/[MW@#%]/.test(char)?.9:/[^\x00-\x7F]/.test(char)?.62:.55),0)*fontPt*.35278;}
+  function estimatedWrappedLines(value,maxWidthMm,fontPt){const text=String(value??"").trim();if(!text)return 0;let lines=1,width=0;for(const word of text.split(/\s+/)){const wordWidth=estimatedTextWidthMm(word,fontPt),space=width?estimatedTextWidthMm(" ",fontPt):0;if(wordWidth>maxWidthMm){const pieces=Math.ceil(wordWidth/maxWidthMm);lines+=pieces-1;width=wordWidth-(pieces-1)*maxWidthMm;}else if(width+space+wordWidth<=maxWidthMm)width+=space+wordWidth;else{lines++;width=wordWidth;}}return lines;}
+  function qrPrintMetrics(value,config=state.config){if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");const qr=window.qrcode(0,"M");qr.addData(String(value));qr.make();const modules=qr.getModuleCount(),quietZoneModules=4,{qrSize}=printMetrics(config),moduleSizeMm=qrSize/(modules+quietZoneModules*2);return {modules,quietZoneModules,qrSize,moduleSizeMm};}
+  function getExportPreflightIssues(rows=getValidRows(),config=state.config){
+    const issues=[],metrics=printMetrics(config),studio=String(config.studio||"").trim();
+    if(!studio)issues.push({field:"studio_name",message:"Studio name is required"});else if(estimatedTextWidthMm(studio,6)>metrics.cardW-20)issues.push({field:"studio_name",message:"Studio name does not fit the selected card layout"});
+    const checkedQr=new Map();
+    for(const row of rows){const label=row.card_label||config.label,name=row.recipient_name||row.recipient_id;if(estimatedWrappedLines(label,metrics.cardW*.47,6)>3)issues.push({field:"card_label",recipient_id:row.recipient_id,message:`Card label cannot fit safely for ${row.recipient_id}`});if(estimatedTextWidthMm(name,5)>metrics.cardW*.47)issues.push({field:"recipient_name",recipient_id:row.recipient_id,message:`Recipient name cannot fit safely for ${row.recipient_id}`});if(!checkedQr.has(row.gallery_url)){try{const qr=qrPrintMetrics(row.gallery_url,config);checkedQr.set(row.gallery_url,qr);if(qr.qrSize<20||qr.moduleSizeMm<.4||qr.quietZoneModules<4)issues.push({field:"gallery_url",recipient_id:row.recipient_id,message:`QR print size is unsafe for ${row.recipient_id} (${qr.qrSize.toFixed(1)} mm, ${qr.moduleSizeMm.toFixed(2)} mm/module)`});}catch(error){issues.push({field:"gallery_url",recipient_id:row.recipient_id,message:`QR cannot be generated for ${row.recipient_id}: ${error.message}`});}}
+    }
+    return issues;
+  }
+  function updateGenerateAvailability(){const issues=getExportPreflightIssues();el.generateBtn.disabled=!el.confirmMapping.checked||!canContinue()||issues.length>0;if(issues.length){el.reviewValidationStatus.title=issues[0].message;}}
   function expandCards(rows) { return rows.flatMap(row=>Array.from({length:Number(row.copies||1)},(_,i)=>({...row,copy_number:i+1}))); }
 
   function openGenerateDialog() {
-    if(!canContinue())return toast("Fix blocking errors before generation.");
+    if(!canContinue())return toast("Fix blocking errors before generation.");const issues=getExportPreflightIssues();if(issues.length){setStatus(`Generate blocked: ${issues[0].message}.`,true);return toast(issues[0].message);}
     state.cancelRequested=false; state.cancelLocked=false; el.dialogError.hidden=true; el.dialogError.textContent=""; el.generationProgress.hidden=true; el.cancelGenerateBtn.disabled=false; el.cancelGenerateBtn.textContent="Cancel"; el.dialogCloseBtn.disabled=false; el.generateDialog.showModal();
   }
 
@@ -301,66 +329,76 @@
   }
 
   async function generateExport() {
-    if(state.isGenerating)return;
+    if(state.isGenerating)return;const preflight=getExportPreflightIssues();if(preflight.length){setStatus(`Export blocked: ${preflight[0].message}.`,true);return toast(preflight[0].message);}
     state.isGenerating=true; state.cancelRequested=false; state.cancelLocked=false; el.confirmGenerateBtn.disabled=true; el.confirmGenerateBtn.textContent="Generating…"; el.cancelGenerateBtn.disabled=false; el.dialogCloseBtn.disabled=false; el.dialogError.hidden=true; el.dialogError.textContent=""; setStatus("Generating stable IDs, QR assets and export mapping…");
     try {
       const record=createExportRecord(), info=gridInfo(record.config), pages=Math.ceil(record.cards.length/info.perPage); updateGenerationProgress(0,record.cards.length,pages);
       const pdf=await generatePdf(record,false,{shouldCancel:()=>state.cancelRequested,onProgress:(done,total)=>updateGenerationProgress(done,total,pages,`Rendering page ${Math.max(1,Math.ceil(done/info.perPage))} of ${pages}`)}); ensureNotCancelled();
       const mapping=createMappingCsv(record); if(!mapping.text||mapping.count!==record.cards.length)throw new Error("Mapping CSV is incomplete");
       state.cancelLocked=true; el.cancelGenerateBtn.disabled=true; el.dialogCloseBtn.disabled=true; updateGenerationProgress(record.cards.length,record.cards.length,pages,"Finalizing both downloads…");
-      const saveResult=pdf.save(`${record.batch_id}-${record.export_id}.pdf`,{returnPromise:true}); if(saveResult&&typeof saveResult.then==="function")await saveResult; downloadText(`${record.batch_id}-mapping.csv`,mapping.text,"text/csv;charset=utf-8");
-      state.currentExport=record; state.histories=state.histories.filter(h=>h.export_id!==record.export_id); state.histories.unshift(record); saveHistory(); renderHistory(); resetFeedbackForm(); el.feedbackComment.disabled=false; el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${record.cards.length.toLocaleString()} cards · ${pages} pages · ${record.batch_id} · No tokens deducted`; setStatus(`Export generated. PDF and mapping verified against ${record.snapshot_signature}; browser downloads started.`); window.scrollTo({top:110,behavior:"smooth"});
+      requestPdfDownload(pdf,`${record.batch_id}-${record.export_id}.pdf`); requestTextDownload(`${record.batch_id}-mapping.csv`,mapping.text,"text/csv;charset=utf-8");
+      state.currentExport=record; state.histories=state.histories.filter(h=>h.export_id!==record.export_id); state.histories.unshift(record); const persisted=saveHistory(); renderHistory(); resetFeedbackForm(); el.feedbackComment.disabled=false; el.generateDialog.close(); $$('[data-panel]').forEach(panel=>panel.hidden=true); el.resultPanel.hidden=false; el.resultMeta.textContent=`${record.cards.length.toLocaleString()} cards · ${pages} pages · ${record.batch_id} · No tokens deducted${persisted?"":" · History not persisted"}`; setStatus(`Export generated and verified against ${record.snapshot_signature}. Download requests were sent to Chrome${persisted?"":"; browser history storage failed"}. If files are not visible, allow downloads and use the download buttons.`); window.scrollTo({top:110,behavior:"smooth"});
     } catch(error) {
       console.error(error); const cancelled=error.name==="ExportCancelledError", message=cancelled?"Export cancelled. No files, history or token charge were recorded.":`Export failed: ${error.message}. Your imported recipients are still available; resolve the issue and retry.`; el.dialogError.textContent=message; el.dialogError.hidden=false; setStatus(message,!cancelled); toast(cancelled?"Export cancelled safely.":"Export failed. No completed history or charge was recorded.");
     } finally { state.isGenerating=false; state.cancelLocked=false; el.confirmGenerateBtn.disabled=false; el.confirmGenerateBtn.textContent="Confirm & generate"; el.cancelGenerateBtn.disabled=false; el.cancelGenerateBtn.textContent="Cancel"; el.dialogCloseBtn.disabled=false; }
   }
 
+  async function loadPdfFontData(){
+    if(!pdfFontDataPromise)pdfFontDataPromise=fetch("vendor/NotoSansJP-VF.ttf").then(response=>{if(!response.ok)throw new Error(`Unicode PDF font could not be loaded (${response.status})`);return response.arrayBuffer();}).then(buffer=>{const bytes=new Uint8Array(buffer),chunk=0x8000,parts=[];for(let i=0;i<bytes.length;i+=chunk)parts.push(String.fromCharCode(...bytes.subarray(i,i+chunk)));return btoa(parts.join(""));});
+    return pdfFontDataPromise;
+  }
+  async function registerPdfUnicodeFont(pdf){const data=await loadPdfFontData();pdf.addFileToVFS("NotoSansJP-VF.ttf",data);pdf.addFont("NotoSansJP-VF.ttf","PrintcartUnicode","normal");pdf.addFont("NotoSansJP-VF.ttf","PrintcartUnicode","bold");}
+  function setPdfFont(pdf,style="normal"){pdf.setFont("PrintcartUnicode",style);}
+
   async function generatePdf(record, download, options={}) {
-    validateExportSnapshot(record); if(!window.jspdf)throw new Error("PDF library is unavailable"); if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");
-    const {jsPDF}=window.jspdf, config=record.config, info=gridInfo(config), isA4=config.paper==="a4", pageW=isA4?210:215.9, pageH=isA4?297:279.4, margin=10, gap=3, cardW=(pageW-margin*2-gap*(info.cols-1))/info.cols, cardH=(pageH-margin*2-gap*(info.rows-1))/info.rows, pdf=new jsPDF({orientation:"portrait",unit:"mm",format:isA4?"a4":"letter",compress:true});
+    validateExportSnapshot(record); if(!window.jspdf)throw new Error("PDF library is unavailable"); if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");const preflight=getExportPreflightIssues(record.recipients,record.config);if(preflight.length)throw new Error(preflight[0].message);
+    const {jsPDF}=window.jspdf, config=record.config, info=gridInfo(config), isA4=config.paper==="a4", pageW=isA4?210:215.9, pageH=isA4?297:279.4, margin=10, gap=3, cardW=(pageW-margin*2-gap*(info.cols-1))/info.cols, cardH=(pageH-margin*2-gap*(info.rows-1))/info.rows, pdf=new jsPDF({orientation:"portrait",unit:"mm",format:isA4?"a4":"letter",compress:true,putOnlyUsedFonts:true});await registerPdfUnicodeFont(pdf);
     for(let index=0;index<record.cards.length;index++){
       if(options.shouldCancel?.())ensureNotCancelled(); if(index>0&&index%info.perPage===0)pdf.addPage(); const pos=index%info.perPage,row=Math.floor(pos/info.cols),col=pos%info.cols,x=margin+col*(cardW+gap),y=margin+row*(cardH+gap),card=record.cards[index];
       pdf.setDrawColor(190,198,210); pdf.setLineDashPattern([1,1],0); pdf.rect(x,y,cardW,cardH); pdf.setLineDashPattern([],0); const accent=hexToRgb(config.accent);
       if(config.template==="branded"){pdf.setFillColor(23,40,68);pdf.rect(x+.6,y+.6,cardW-1.2,cardH-1.2,"F");pdf.setFillColor(...accent);pdf.rect(x+.6,y+.6,2,cardH-1.2,"F");pdf.setTextColor(255,255,255);} else {pdf.setFillColor(config.template==="school"?255:255,config.template==="school"?248:255,config.template==="school"?231:255);pdf.rect(x+.6,y+.6,cardW-1.2,cardH-1.2,"F");pdf.setTextColor(23,32,51);pdf.setFillColor(...accent); if(config.template==="school")pdf.rect(x+.6,y+.6,cardW-1.2,2,"F");else pdf.rect(x+.6,y+cardH-2.6,cardW-1.2,2,"F");}
-      if(record.logoData){try{pdf.addImage(record.logoData,"PNG",x+5,y+5,8,8,undefined,"FAST");}catch{}} else {pdf.setFillColor(...accent);pdf.roundedRect(x+5,y+5,8,8,1.5,1.5,"F");pdf.setTextColor(255,255,255);pdf.setFontSize(5);pdf.text(config.studio.slice(0,1).toUpperCase(),x+9,y+10.5,{align:"center"});}
-      pdf.setFont("helvetica","bold");pdf.setFontSize(6);pdf.setTextColor(config.template==="branded"?255:23,config.template==="branded"?255:32,config.template==="branded"?255:51);pdf.text(safePdfText(config.studio).slice(0,36),x+15,y+10);
+      if(record.logoData){try{pdf.addImage(record.logoData,"PNG",x+5,y+5,8,8,undefined,"FAST");}catch{}} else {pdf.setFillColor(...accent);pdf.roundedRect(x+5,y+5,8,8,1.5,1.5,"F");pdf.setTextColor(255,255,255);pdf.setFontSize(5);setPdfFont(pdf,"bold");pdf.text(safePdfText(config.studio).slice(0,1).toUpperCase(),x+9,y+10.5,{align:"center"});}
+      setPdfFont(pdf,"bold");pdf.setFontSize(6);pdf.setTextColor(config.template==="branded"?255:23,config.template==="branded"?255:32,config.template==="branded"?255:51);pdf.text(safePdfText(config.studio),x+15,y+10);
       pdf.setFontSize(5);pdf.setTextColor(...accent);pdf.text(config.template==="school"?"YOUR SCHOOL PHOTOS":"PHOTO GALLERY",x+5,y+cardH*.36);
       let labelSize=Math.max(7,Math.min(10,cardW/8));pdf.setFontSize(labelSize);pdf.setTextColor(config.template==="branded"?255:23,config.template==="branded"?255:32,config.template==="branded"?255:51);const labelText=safePdfText(card.card_label||config.label);let label=pdf.splitTextToSize(labelText,cardW*.47);while(label.length>3&&labelSize>6){labelSize=Math.max(6,labelSize-.5);pdf.setFontSize(labelSize);label=pdf.splitTextToSize(labelText,cardW*.47);}if(label.length>3)throw new Error(`Card label cannot fit safely for ${card.recipient_id}`);pdf.text(label,x+5,y+cardH*.45);
-      pdf.setFont("helvetica","normal");pdf.setFontSize(5);pdf.setTextColor(config.template==="branded"?210:100,config.template==="branded"?218:112,config.template==="branded"?230:128);pdf.text(safePdfText(card.recipient_name||card.recipient_id).slice(0,45),x+5,y+cardH*.75);
+      setPdfFont(pdf,"normal");pdf.setFontSize(5);pdf.setTextColor(config.template==="branded"?210:100,config.template==="branded"?218:112,config.template==="branded"?230:128);pdf.text(safePdfText(card.recipient_name||card.recipient_id),x+5,y+cardH*.75);
       const qrSize=Math.min(cardH*.52,cardW*.34,30),qrX=x+cardW-qrSize-5,qrY=y+Math.max(5,(cardH-qrSize)/2-2),qrData=await qrDataUrl(card.qr_value,420);pdf.setFillColor(255,255,255);pdf.rect(qrX-1.5,qrY-1.5,qrSize+3,qrSize+3,"F");pdf.addImage(qrData,"PNG",qrX,qrY,qrSize,qrSize,undefined,"FAST");pdf.setTextColor(config.template==="branded"?220:70);pdf.setFontSize(4);pdf.text("SCAN TO OPEN GALLERY",qrX+qrSize/2,qrY+qrSize+3,{align:"center"});
       pdf.setTextColor(125);pdf.setFontSize(3.5);pdf.text(`${record.batch_id} · P${card.page} R${card.row} C${card.column}`,x+cardW-3,y+cardH-2.5,{align:"right"}); options.onProgress?.(index+1,record.cards.length); await yieldToBrowser();
     }
     if(options.shouldCancel?.())ensureNotCancelled(); validateExportSnapshot(record); const bytes=pdf.output("arraybuffer"); if(!(bytes instanceof ArrayBuffer)||bytes.byteLength<1000)throw new Error("Generated PDF is empty or invalid");
-    if(download){const saveResult=pdf.save(`${record.batch_id}-${record.export_id}.pdf`,{returnPromise:true});if(saveResult&&typeof saveResult.then==="function")await saveResult;} return pdf;
+    if(download)requestPdfDownload(pdf,`${record.batch_id}-${record.export_id}.pdf`); return pdf;
   }
 
   async function runPdfDownload(record,button,idleLabel) {
     if(!record){setStatus("Download failed: no completed export is available.",true);return toast("No completed export is available.");}
     button.disabled=true; button.textContent="Preparing PDF…"; setStatus(`Preparing ${record.cards.length.toLocaleString()} QR cards for download…`);
-    try{await generatePdf(record,true);setStatus(`PDF downloaded: ${record.batch_id} · ${record.cards.length.toLocaleString()} cards.`);toast("PDF download started.");}
+    try{await generatePdf(record,true);setStatus(`PDF verified. A download request was sent to Chrome for ${record.batch_id}. If no file appears, allow downloads and retry.`);toast("PDF download requested.");}
     catch(error){console.error(error);setStatus(`PDF download failed: ${error.message}`,true);toast(`PDF download failed: ${error.message}`);}
     finally{button.disabled=false;button.textContent=idleLabel;}
   }
 
   function runMappingDownload(record,button) {
     button.disabled=true;
-    try{const count=downloadMapping(record);setStatus(`Mapping CSV downloaded: ${count.toLocaleString()} card rows.`);toast("Mapping CSV download started.");}
+    try{const count=downloadMapping(record);setStatus(`Mapping CSV verified (${count.toLocaleString()} card rows). A download request was sent to Chrome.`);toast("Mapping CSV download requested.");}
     catch(error){console.error(error);setStatus(`Mapping CSV download failed: ${error.message}`,true);toast(`Mapping CSV download failed: ${error.message}`);}
     finally{button.disabled=false;}
   }
 
   function downloadMapping(record) {
-    const mapping=createMappingCsv(record); downloadText(`${record.batch_id}-mapping.csv`,mapping.text,"text/csv;charset=utf-8"); return mapping.count;
+    const mapping=createMappingCsv(record); requestTextDownload(`${record.batch_id}-mapping.csv`,mapping.text,"text/csv;charset=utf-8"); return mapping.count;
   }
   function createMappingCsv(record) { validateExportSnapshot(record); const header=["batch_id","export_id","snapshot_signature","layout_version","card_id","recipient_id","destination","page","row","column","copies","copy_number","template_version","qr_value","status"]; const lines=[header,...record.cards.map(c=>[c.batch_id,c.export_id,record.snapshot_signature,record.layout_version,c.card_id,c.recipient_id,c.gallery_url,c.page,c.row,c.column,c.copies,c.copy_number,c.template_version,c.qr_value,c.status||"Active"])]; return {text:toCsv(lines),count:record.cards.length}; }
 
   function toCsv(rows) { return "\uFEFF"+rows.map(row=>row.map(csvCell).join(",")).join("\r\n"); }
   function csvCell(value) { let text=String(value??""); if(/^[=+\-@\t\r]/.test(text))text="'"+text; return `"${text.replaceAll('"','""')}"`; }
-  function downloadText(name,text,type) { const blob=new Blob([text],{type});if(!blob.size)throw new Error("Generated file is empty");const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.style.display="none";document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000); }
+  function requestBlobDownload(name,blob){if(!(blob instanceof Blob)||!blob.size)throw new Error("Generated file is empty");if(!document.body)throw new Error("Browser download controls are unavailable");const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.style.display="none";document.body.appendChild(a);try{a.click();}catch(error){URL.revokeObjectURL(url);a.remove();throw new Error(`Browser rejected the download request: ${error.message}`);}a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);return {requested:true,name,size:blob.size};}
+  function requestTextDownload(name,text,type){return requestBlobDownload(name,new Blob([text],{type}));}
+  function requestPdfDownload(pdf,name){const blob=pdf.output("blob");if(!(blob instanceof Blob)||blob.size<1000)throw new Error("Generated PDF is empty or invalid");return requestBlobDownload(name,blob);}
+  function downloadText(name,text,type){return requestTextDownload(name,text,type);}
 
   function normalizeHistoryRecord(record){if(!record||!Array.isArray(record.cards))return null;record.layout_version=record.layout_version||"bulk-qr-layout-v1";record.demo_overrides=record.demo_overrides||{};record.audit=Array.isArray(record.audit)?record.audit:[];record.snapshot_signature=record.snapshot_signature||snapshotSignature(record);return record;}
-  function loadHistory(){try{return JSON.parse(localStorage.getItem("printcart_bulk_qr_history")||"[]").map(normalizeHistoryRecord).filter(Boolean);}catch{return[]}}
-  function saveHistory(){try{localStorage.setItem("printcart_bulk_qr_history",JSON.stringify(state.histories.slice(0,8)));}catch{toast("Browser storage is full; history was not persisted.");}}
+  function loadHistory(){try{return JSON.parse(localStorage.getItem("printcart_bulk_qr_history")||"[]").map(normalizeHistoryRecord).filter(Boolean);}catch(error){historyStorageError=`Batch History could not be loaded from browser storage: ${error.message}`;return[]}}
+  function saveHistory(){try{localStorage.setItem("printcart_bulk_qr_history",JSON.stringify(state.histories.slice(0,8)));return true;}catch(error){historyStorageError=`Batch History was not persisted: ${error.message}`;toast("Browser storage is unavailable; this batch remains available only until the page closes.");return false;}}
   function renderHistory(){el.historyCount.textContent=state.histories.length;el.historyEmpty.hidden=state.histories.length>0;el.historyList.innerHTML=state.histories.map((r,i)=>`<article class="history-item"><div><strong>${escapeHtml(r.batch_id)}</strong><small>${new Date(r.created_at).toLocaleString()}</small><span class="status-badge valid">✓ ${escapeHtml(r.status)}</span></div><div><small>Recipients</small><strong>${r.recipients.length}</strong></div><div><small>Cards</small><strong>${r.cards.length}</strong></div><div><small>Export</small><strong>v${r.version}</strong></div><div class="history-actions"><button class="btn compact secondary" data-history-open="${i}">Inspect</button><button class="btn compact secondary" data-history-pdf="${i}">PDF</button><button class="btn compact secondary" data-history-csv="${i}">CSV</button></div></article>`).join("");$$('[data-history-open]',el.historyList).forEach(b=>b.addEventListener("click",()=>showHistoryDetail(Number(b.dataset.historyOpen))));$$('[data-history-pdf]',el.historyList).forEach(b=>b.addEventListener("click",()=>runPdfDownload(state.histories[Number(b.dataset.historyPdf)],b,"PDF")));$$('[data-history-csv]',el.historyList).forEach(b=>b.addEventListener("click",()=>runMappingDownload(state.histories[Number(b.dataset.historyCsv)],b)));}
 
   function showHistory(){el.resultPanel.hidden=true;$$('[data-panel]').forEach(p=>p.hidden=true);el.historyPanel.hidden=false;renderHistory();window.scrollTo({top:110,behavior:"smooth"});}
@@ -371,7 +409,7 @@
     $("#cardSearchBtn").onclick=draw; $("#cardSearch").oninput=draw; draw();
   }
 
-  function updateDemoCard(record,cardId,url,revoke){if(!revoke){try{const u=new URL(url);if(u.protocol!=="https:")throw new Error();}catch{return toast("Destination must be a valid HTTPS URL.");}}validateExportSnapshot(record);record.demo_overrides[cardId]={gallery_url:revoke?(record.demo_overrides[cardId]?.gallery_url||record.cards.find(c=>c.card_id===cardId)?.gallery_url):url,status:revoke?"Revoked":"Active"};record.audit.unshift({timestamp:new Date().toISOString(),action:revoke?"qr_revoked_demo":"destination_updated_demo",actor:"demo-user",target:cardId});saveHistory();toast(revoke?"Local revoke recorded. Locked export snapshot is unchanged.":"Local destination changed. Locked export snapshot is unchanged.");showHistoryDetail(state.histories.indexOf(record));}
+  function updateDemoCard(record,cardId,url,revoke){if(!revoke){try{const u=new URL(url);if(u.protocol!=="https:")throw new Error();}catch{return toast("Destination must be a valid HTTPS URL.");}}validateExportSnapshot(record);record.demo_overrides[cardId]={gallery_url:revoke?(record.demo_overrides[cardId]?.gallery_url||record.cards.find(c=>c.card_id===cardId)?.gallery_url):url,status:revoke?"Revoked":"Active"};record.audit.unshift({timestamp:new Date().toISOString(),action:revoke?"qr_revoked_demo":"destination_updated_demo",actor:"demo-user",target:cardId});const persisted=saveHistory();toast(persisted?(revoke?"Local revoke recorded. Locked export snapshot is unchanged.":"Local destination changed. Locked export snapshot is unchanged."):"Change is available in memory only; browser storage failed.");showHistoryDetail(state.histories.indexOf(record));}
 
   function resetBatch(){state.rows=[];state.previewIndex=0;state.currentExport=null;el.urlPaste.value="";el.csvInput.value="";el.resultPanel.hidden=true;resetFeedbackForm();el.feedbackComment.disabled=false;switchImportMode("csv");renderImport();showStep(1);setStatus("New draft batch started.");}
   function setStatus(message,error=false){el.globalStatus.textContent=message;el.globalStatus.style.color=error?"var(--red)":"var(--muted)";}
@@ -389,7 +427,7 @@
   async function qrDataUrl(text,size){if(typeof window.qrcode!=="function")throw new Error("QR library is unavailable");const canvas=document.createElement("canvas");await drawQr(canvas,text,size);return canvas.toDataURL("image/png");}
   function hash(text){let h=2166136261;for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(36).toUpperCase().padStart(7,"0").slice(0,7);}
   function hexToRgb(hex){const n=parseInt(hex.slice(1),16);return[(n>>16)&255,(n>>8)&255,n&255];}
-  function safePdfText(value){return String(value??"").normalize("NFKD").replace(/[\u0300-\u036f]/g,"").replace(/[^\x20-\x7E]/g,"?");}
+  function safePdfText(value){return String(value??"").normalize("NFC").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,"");}
   function escapeHtml(value){return String(value??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));}
   function escapeAttr(value){return escapeHtml(value).replace(/`/g,"&#096;");}
 })();
