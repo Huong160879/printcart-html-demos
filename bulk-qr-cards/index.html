@@ -22,12 +22,21 @@
         <span class="header-brand-divider" aria-hidden="true"></span>
         <span class="header-tool-name">Bulk QR Cards</span>
       </div>
-      <nav aria-label="Printcart navigation">
-        <a href="#" class="header-link" id="dashboardLink">Dashboard</a>
-        <span class="header-link active" aria-current="page">AI Tools</span>
-        <button class="wallet" id="walletBtn" type="button" aria-describedby="walletHelp"><span aria-hidden="true">◆</span> <strong>1,200</strong> Tokens</button>
-        <span id="walletHelp" class="sr-only">Shared Printcart demo balance. No tokens are deducted in this prototype.</span>
-        <button class="avatar" type="button" aria-label="Printcart account">HU</button>
+      <nav class="header-nav" aria-label="Primary navigation">
+        <button class="header-link" id="dashboardLink" type="button">Dashboard</button>
+        <button class="header-link" id="myFilesLink" type="button">My Files</button>
+        <button class="wallet" id="walletBtn" type="button" aria-describedby="walletHelp"><span aria-hidden="true">◆</span> <strong id="walletValue">0</strong> Tokens</button>
+        <span id="walletHelp" class="sr-only">Shared Printcart account balance. Bulk QR Cards never changes this balance in the HTML prototype.</span>
+        <div class="account-menu-wrap" id="headerAccountWrap" hidden>
+          <button class="avatar" id="headerAvatar" type="button" aria-label="Open Printcart account menu" aria-controls="headerAccountMenu" aria-haspopup="menu" aria-expanded="false">PC</button>
+          <div class="account-menu" id="headerAccountMenu" role="menu" hidden>
+            <div class="account-menu-identity"><strong id="accountMenuName">Printcart account</strong><span id="accountMenuEmail"></span></div>
+            <button id="accountDashboard" type="button" role="menuitem">Account &amp; Dashboard</button>
+            <button class="account-menu-signout" id="headerSignOut" type="button" role="menuitem">Sign out</button>
+          </div>
+        </div>
+        <button class="auth-link" id="headerSignIn" type="button">Sign in</button>
+        <button class="auth-link primary" id="headerCreateAccount" type="button">Create account</button>
       </nav>
     </div>
   </header>
@@ -117,6 +126,7 @@
   <dialog id="generateDialog"><form method="dialog" class="dialog-card"><button class="dialog-close" id="dialogCloseBtn" type="button" aria-label="Close">×</button><p class="step-label">SIMULATED COST CONFIRMATION</p><h2>Generate this batch?</h2><dl><div><dt>Physical cards</dt><dd id="dialogCards">0</dd></div><div><dt>Estimated cost</dt><dd id="dialogCost">25 demo tokens</dd></div><div><dt>Demo wallet</dt><dd>1,200 tokens</dd></div></dl><p>No token is charged. Production must call an idempotent wallet ledger only after explicit confirmation.</p><div class="generation-progress" id="generationProgress" aria-live="polite" hidden><div><strong id="progressLabel">Preparing export…</strong><span id="progressCount">0 / 0</span></div><progress id="progressBar" max="1" value="0"></progress></div><p class="dialog-error" id="dialogError" role="alert" aria-live="assertive" hidden></p><div class="dialog-actions"><button class="btn secondary" id="cancelGenerateBtn" type="button">Cancel</button><button class="btn primary" id="confirmGenerateBtn" value="default" type="button">Confirm &amp; generate</button></div></form></dialog>
 
   <dialog id="walletDialog"><form method="dialog" class="dialog-card"><button class="dialog-close" value="cancel" aria-label="Close">×</button><p class="step-label">DEMO ONLY</p><h2>Shared Token Wallet</h2><p>This balance is a visual placeholder for the existing Printcart wallet. The prototype never deducts tokens.</p><button class="btn primary full" value="cancel">Got it</button></form></dialog>
+  <dialog id="accountDialog"><form class="dialog-card auth-dialog" id="accountForm"><button class="dialog-close" id="closeAccountDialog" type="button" aria-label="Close">×</button><p class="step-label">PRINTCART ACCOUNT</p><h2 id="accountDialogTitle">Sign in</h2><p id="accountDialogCopy">Your current Bulk QR Cards work will stay open.</p><div class="auth-tabs" role="tablist"><button id="accountSignInTab" type="button" role="tab" aria-selected="true">Sign in</button><button id="accountCreateTab" type="button" role="tab" aria-selected="false">Create account</button></div><label class="auth-field" id="accountNameField" hidden><span>Name</span><input id="accountName" type="text" autocomplete="name"></label><label class="auth-field"><span>Email</span><input id="accountEmail" type="email" autocomplete="email" required></label><label class="auth-field"><span>Password</span><input id="accountPassword" type="password" autocomplete="current-password" minlength="8" required></label><button class="auth-forgot" id="accountForgot" type="button">Forgot password?</button><label class="auth-field" id="accountConfirmField" hidden><span>Confirm password</span><input id="accountPasswordConfirm" type="password" autocomplete="new-password" minlength="8"></label><label class="auth-check" id="accountTermsField" hidden><input id="accountTerms" type="checkbox"><span>I understand this creates a browser-only demo account. Use test information only.</span></label><p class="auth-status" id="accountStatus" role="status"></p><button class="btn primary auth-submit" id="accountSubmit" type="submit">Sign in</button><p class="auth-note">Shared Header UI v1.0 · Uses the same browser demo account and Shared Token Wallet as other Printcart tools.</p></form></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

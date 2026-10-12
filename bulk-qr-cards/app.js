@@ -4,6 +4,9 @@
   const fields = ["recipient_id", "gallery_url", "recipient_name", "group_name", "card_label", "access_code", "copies", "sort_order"];
   const MAX_RECIPIENTS = 1000;
   const MAX_PHYSICAL_CARDS = 1000;
+  const PROFILE_KEY = "printcart-sell-profile-v1";
+  const DEMO_ACCOUNTS_KEY = "printcart-demo-accounts-v1";
+  const WALLET_KEY = "printcart-token-wallet-v1";
   const samples = {
     valid: `recipient_id,gallery_url,recipient_name,group_name,card_label,access_code,copies,sort_order\nSTU-001,https://example.com/gallery/student-001,An Nguyen,Class 5A,Your school photos are ready,,1,1\nSTU-002,https://example.com/gallery/student-002,Binh Tran,Class 5A,Scan to view your photos,,2,2\nSTU-003,https://example.com/gallery/student-003,Chi Le,Class 5B,Memories from picture day,,1,3\nSTU-004,https://example.com/gallery/student-004,Dung Pham,Class 5B,Your portraits are ready,,1,4\nSTU-005,https://example.com/gallery/student-005,Giang Vo,Class 5C,Scan to view and order prints,,1,5`,
     errors: `recipient_id,gallery_url,recipient_name,group_name,card_label,access_code,copies,sort_order\nSTU-101,http://example.com/gallery/student-101,An Nguyen,Class 6A,HTTP is blocked,,1,1\nSTU-102,https://example.com/gallery/student-102,Binh Tran,Class 6A,Valid row,,1,2\nSTU-102,https://example.com/gallery/student-103,Chi Le,Class 6A,Duplicate recipient ID,,1,3\n,https://example.com/gallery/student-104,Dung Pham,Class 6B,Missing recipient ID,,1,4\nSTU-105,not-a-url,Giang Vo,Class 6B,Invalid URL,,0,5\nSTU-106,https://example.com/gallery/student-106,Hanh Bui,Class 6B,This label is intentionally very long so the constrained card template can warn about text that may overflow the safe print area,,many,6`,
@@ -21,11 +24,14 @@
     histories: loadHistory()
   };
   const el = {};
+  let sharedProfile = null;
+  let accountMode = "signin";
 
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","validationCallout","validationTitle","validationMessage","showErrorsBtn","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","defaultLabelWarning","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","previewRecipientSearch","previewRecipientOptions","previewRecipientGo","previewSearchHint","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","reviewValidationStatus","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","feedbackPanel","feedbackStars","feedbackComment","feedbackStatus","submitFeedbackBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote"].forEach(id => el[id] = document.getElementById(id));
+    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","validationCallout","validationTitle","validationMessage","showErrorsBtn","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","defaultLabelWarning","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","previewRecipientSearch","previewRecipientOptions","previewRecipientGo","previewSearchHint","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","reviewValidationStatus","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","feedbackPanel","feedbackStars","feedbackComment","feedbackStatus","submitFeedbackBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote","walletValue","headerAccountWrap","headerAvatar","headerAccountMenu","accountMenuName","accountMenuEmail","headerSignIn","headerCreateAccount","headerSignOut","accountDashboard","accountDialog","accountForm","closeAccountDialog","accountDialogTitle","accountDialogCopy","accountSignInTab","accountCreateTab","accountNameField","accountName","accountEmail","accountPassword","accountForgot","accountConfirmField","accountPasswordConfirm","accountTermsField","accountTerms","accountStatus","accountSubmit"].forEach(id => el[id] = document.getElementById(id));
+    loadSharedHeader();
     bindEvents();
     renderHistory();
     updateStepper();
@@ -77,9 +83,118 @@
     [el.historyBtn,el.viewHistoryBtn].forEach(btn => btn.addEventListener("click", showHistory));
     el.closeHistoryBtn.addEventListener("click", () => { el.historyPanel.hidden = true; showStep(state.step); });
     el.newBatchBtn.addEventListener("click", resetBatch);
-    el.walletBtn.addEventListener("click", () => el.walletDialog.showModal());
-    $("#dashboardLink").addEventListener("click", e => { e.preventDefault(); toast("Dashboard link placeholder — existing Printcart Dashboard is not rebuilt here."); });
+    el.walletBtn.addEventListener("click", () => sharedProfile ? el.walletDialog.showModal() : openAccountDialog("signin"));
+    $("#dashboardLink").addEventListener("click", () => toast("Dashboard link placeholder — the existing Printcart Dashboard is not rebuilt here."));
+    $("#myFilesLink").addEventListener("click", () => toast("My Files link placeholder — files remain in the existing Printcart account."));
+    el.headerSignIn.addEventListener("click", () => openAccountDialog("signin"));
+    el.headerCreateAccount.addEventListener("click", () => openAccountDialog("create"));
+    el.closeAccountDialog.addEventListener("click", closeAccountDialog);
+    el.accountDialog.addEventListener("cancel", closeAccountDialog);
+    el.accountSignInTab.addEventListener("click", () => setAccountMode("signin"));
+    el.accountCreateTab.addEventListener("click", () => setAccountMode("create"));
+    el.accountForgot.addEventListener("click", () => { el.accountStatus.textContent = "Password recovery is not connected in this browser-only prototype."; });
+    el.accountForm.addEventListener("submit", submitAccountForm);
+    el.headerAvatar.addEventListener("click", event => { event.stopPropagation(); const open = el.headerAccountMenu.hidden; closeAccountMenu(); if(open){el.headerAccountMenu.hidden=false;el.headerAvatar.setAttribute("aria-expanded","true");} });
+    el.headerSignOut.addEventListener("click", signOutSharedHeader);
+    el.accountDashboard.addEventListener("click", () => { closeAccountMenu(); toast("Account & Dashboard remains part of the existing Printcart platform."); });
+    document.addEventListener("click", event => { if(!el.headerAccountWrap.contains(event.target))closeAccountMenu(); });
+    document.addEventListener("keydown", event => { if(event.key === "Escape")closeAccountMenu(); });
     $$(".stepper button").forEach(btn => btn.addEventListener("click", () => { const target = Number(btn.parentElement.dataset.step); if (target === 1 || (target === 2 && canContinue()) || (target === 3 && canContinue())) showStep(target); }));
+  }
+
+  function validEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "")); }
+  function bytesToHex(bytes) { return [...bytes].map(value => value.toString(16).padStart(2,"0")).join(""); }
+  async function passwordVerifier(password,salt) { if(!crypto?.subtle)throw new Error("Secure password verification is unavailable in this browser."); const data=new TextEncoder().encode(`${salt}:${password}`),digest=await crypto.subtle.digest("SHA-256",data); return bytesToHex(new Uint8Array(digest)); }
+  function newPasswordSalt() { const bytes=new Uint8Array(16); crypto.getRandomValues(bytes); return bytesToHex(bytes); }
+  function loadDemoAccounts() { try { const value=JSON.parse(localStorage.getItem(DEMO_ACCOUNTS_KEY)||"null"); if(value?.version===1&&value.accounts&&typeof value.accounts==="object")return value; } catch {} return {version:1,accounts:{}}; }
+  function sharedWalletKey() { return sharedProfile?.email ? `${WALLET_KEY}:${sharedProfile.email.toLowerCase()}` : null; }
+  function readSharedWallet() {
+    const key=sharedWalletKey();
+    if(!key)return {balance:0,transactions:[]};
+    try {
+      const stored=JSON.parse(localStorage.getItem(key)||"null");
+      if(stored&&Number.isFinite(stored.balance))return stored;
+      const created={version:1,balance:1200,transactions:[]};
+      localStorage.setItem(key,JSON.stringify(created));
+      return created;
+    } catch {
+      return {balance:0,transactions:[],storageError:true};
+    }
+  }
+  function loadSharedHeader() {
+    sharedProfile=null;
+    try { const stored=JSON.parse(localStorage.getItem(PROFILE_KEY)||"null"); if(stored&&typeof stored.name==="string"&&validEmail(stored.email))sharedProfile=stored; } catch {}
+    renderSharedHeader();
+  }
+  function renderSharedHeader() {
+    const signed=!!sharedProfile,name=sharedProfile?.name?.trim()||"",email=sharedProfile?.email||"";
+    const initials=name?name.split(/\s+/).filter(Boolean).map(part=>part[0]).join("").slice(0,2).toUpperCase():"PC";
+    el.headerAccountWrap.hidden=!signed;
+    el.headerSignIn.hidden=signed;
+    el.headerCreateAccount.hidden=signed;
+    el.headerAvatar.textContent=initials;
+    el.headerAvatar.title=signed?`Account · ${name}`:"Printcart account";
+    el.accountMenuName.textContent=name||"Printcart account";
+    el.accountMenuEmail.textContent=email;
+    const wallet=readSharedWallet();
+    el.walletValue.textContent=Number(wallet.balance||0).toLocaleString();
+    el.walletBtn.title=wallet.storageError?"Shared wallet could not be read because browser storage is unavailable.":signed?"Open Shared Token Wallet":"Sign in to view the Shared Token Wallet";
+    if(!signed)closeAccountMenu();
+  }
+  function closeAccountMenu() { el.headerAccountMenu.hidden=true; el.headerAvatar.setAttribute("aria-expanded","false"); }
+  function setAccountMode(mode) {
+    accountMode=mode==="create"?"create":"signin";
+    const create=accountMode==="create";
+    el.accountDialogTitle.textContent=create?"Create your account":"Sign in";
+    el.accountDialogCopy.textContent=create?"Create one Printcart account for all tools and the Shared Token Wallet.":"Your current Bulk QR Cards work will stay open.";
+    el.accountSignInTab.setAttribute("aria-selected",String(!create));
+    el.accountCreateTab.setAttribute("aria-selected",String(create));
+    el.accountNameField.hidden=!create;
+    el.accountConfirmField.hidden=!create;
+    el.accountTermsField.hidden=!create;
+    el.accountForgot.hidden=create;
+    el.accountPassword.autocomplete=create?"new-password":"current-password";
+    el.accountSubmit.textContent=create?"Create account":"Sign in";
+    el.accountStatus.textContent="";
+  }
+  function openAccountDialog(mode) {
+    setAccountMode(mode);
+    el.accountName.value=""; el.accountEmail.value=""; el.accountPassword.value=""; el.accountPasswordConfirm.value=""; el.accountTerms.checked=false;
+    el.accountDialog.showModal();
+    setTimeout(() => (accountMode==="create"?el.accountName:el.accountEmail).focus(),0);
+  }
+  function closeAccountDialog() { if(el.accountDialog.open)el.accountDialog.close(); el.accountStatus.textContent=""; el.accountPassword.value=""; el.accountPasswordConfirm.value=""; }
+  function signOutSharedHeader() {
+    closeAccountMenu();
+    try { localStorage.removeItem(PROFILE_KEY); } catch {}
+    sharedProfile=null;
+    renderSharedHeader();
+    toast("Signed out. Your current Bulk QR Cards work remains in this tab.");
+  }
+  async function submitAccountForm(event) {
+    event.preventDefault();
+    const create=accountMode==="create",name=el.accountName.value.trim(),email=el.accountEmail.value.trim().toLowerCase(),password=el.accountPassword.value,confirmation=el.accountPasswordConfirm.value;
+    el.accountStatus.textContent="";
+    if(create&&!name){el.accountStatus.textContent="Enter your name.";el.accountName.focus();return;}
+    if(!validEmail(email)){el.accountStatus.textContent="Enter a valid email address.";el.accountEmail.focus();return;}
+    if(password.length<8){el.accountStatus.textContent="Password must contain at least 8 characters.";el.accountPassword.focus();return;}
+    if(create&&password!==confirmation){el.accountStatus.textContent="Passwords do not match.";el.accountPasswordConfirm.focus();return;}
+    if(create&&!el.accountTerms.checked){el.accountStatus.textContent="Confirm that you understand this is a browser-only demo account.";el.accountTerms.focus();return;}
+    el.accountSubmit.disabled=true;
+    try {
+      const accounts=loadDemoAccounts(),existing=accounts.accounts[email];
+      if(create&&existing){el.accountStatus.textContent="An account with this email already exists. Choose Sign in.";return;}
+      if(!create&&!existing){el.accountStatus.textContent="No account with this email exists in this browser. Choose Create account first.";return;}
+      let profileName=name,createdAt=Date.now();
+      if(create){const salt=newPasswordSalt(),passwordHash=await passwordVerifier(password,salt);accounts.accounts[email]={name,email,passwordSalt:salt,passwordHash,createdAt};localStorage.setItem(DEMO_ACCOUNTS_KEY,JSON.stringify(accounts));}
+      else {const passwordHash=await passwordVerifier(password,existing.passwordSalt);if(passwordHash!==existing.passwordHash){el.accountStatus.textContent="Incorrect email or password.";return;}profileName=existing.name;createdAt=existing.createdAt;}
+      sharedProfile={name:profileName,email,createdAt,demo:true,authMethod:"browser-password-preview"};
+      localStorage.setItem(PROFILE_KEY,JSON.stringify(sharedProfile));
+      renderSharedHeader();
+      closeAccountDialog();
+      toast(create?"Account created. Shared Header is now signed in.":"Signed in. Shared account and wallet loaded.");
+    } catch(error) { el.accountStatus.textContent=error?.message||"This browser could not complete demo sign-in."; }
+    finally { el.accountSubmit.disabled=false; }
   }
 
   function switchImportMode(mode) {
