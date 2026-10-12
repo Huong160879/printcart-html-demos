@@ -18,8 +18,9 @@
   let historyStorageError = "";
   let pdfFontDataPromise = null;
   const state = {
-    rows: [], filter: "all", step: 1, previewIndex: 0, logoData: "", currentExport: null, importMode: "csv", feedbackRating: 0,
+    rows: [], filter: "all", tablePage: 1, tablePageSize: 20, step: 1, previewIndex: 0, logoData: "", currentExport: null, importMode: "csv", feedbackRating: 0,
     isGenerating: false, cancelRequested: false, cancelLocked: false,
+    simulateInsufficient: false,
     config: { template: "minimal", studio: "Northlight Studio", label: "Scan to view your photos", accent: "#3569e8", paper: "a4", grid: "2x4" },
     histories: loadHistory()
   };
@@ -30,7 +31,7 @@
   document.addEventListener("DOMContentLoaded", init);
 
   function init() {
-    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","validationCallout","validationTitle","validationMessage","showErrorsBtn","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","defaultLabelWarning","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","previewRecipientSearch","previewRecipientOptions","previewRecipientGo","previewSearchHint","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","reviewValidationStatus","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","feedbackPanel","feedbackStars","feedbackComment","feedbackStatus","submitFeedbackBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote","walletValue","headerAccountWrap","headerAvatar","headerAccountMenu","accountMenuName","accountMenuEmail","headerSignIn","headerCreateAccount","headerSignOut","accountDashboard","accountDialog","accountForm","closeAccountDialog","accountDialogTitle","accountDialogCopy","accountSignInTab","accountCreateTab","accountNameField","accountName","accountEmail","accountPassword","accountForgot","accountConfirmField","accountPasswordConfirm","accountTermsField","accountTerms","accountStatus","accountSubmit"].forEach(id => el[id] = document.getElementById(id));
+    ["globalStatus","csvInput","dropZone","browseBtn","urlPaste","pasteImportBtn","emptyState","dataArea","validationSummary","validationCallout","validationTitle","validationMessage","showErrorsBtn","recipientRows","errorsCsvBtn","toCustomizeBtn","importGate","studioName","defaultLabel","defaultLabelWarning","accentColor","logoInput","paperSize","gridPreset","cardPreview","studioPreview","logoPreview","cardLabelPreview","recipientPreview","cardKicker","qrCanvas","previewUrl","previewIdentity","longLabelWarning","nextPreviewBtn","previewRecipientSearch","previewRecipientOptions","previewRecipientGo","previewSearchHint","toReviewBtn","reviewRecipient","reviewCardHost","paperPreview","pageSelect","sheetPosition","summaryRecipients","summaryCards","summaryPages","summaryPaper","summaryErrors","reviewValidationStatus","tokenEstimate","confirmMapping","generateBtn","insufficientBtn","generateDialog","dialogCards","dialogCost","dialogWalletBalance","dialogWalletNote","dialogError","generationProgress","progressLabel","progressCount","progressBar","dialogCloseBtn","cancelGenerateBtn","confirmGenerateBtn","resultPanel","resultMeta","downloadPdfBtn","downloadMappingBtn","reprintBtn","feedbackPanel","feedbackStars","feedbackComment","feedbackStatus","submitFeedbackBtn","historyPanel","historyList","historyEmpty","historyDetail","historyCount","historyBtn","viewHistoryBtn","closeHistoryBtn","newBatchBtn","walletBtn","walletDialog","toast","rowLimitNote","rowPageSize","rowPageStatus","previousRowsBtn","nextRowsBtn","addRowBtn","walletValue","headerAccountWrap","headerAvatar","headerAccountMenu","accountMenuName","accountMenuEmail","headerSignIn","headerCreateAccount","headerSignOut","accountDashboard","accountDialog","accountForm","closeAccountDialog","accountDialogTitle","accountDialogCopy","accountSignInTab","accountCreateTab","accountNameField","accountName","accountEmail","accountPassword","accountForgot","accountConfirmField","accountPasswordConfirm","accountTermsField","accountTerms","accountStatus","accountSubmit"].forEach(id => el[id] = document.getElementById(id));
     loadSharedHeader();
     bindEvents();
     renderHistory();
@@ -49,9 +50,13 @@
     el.csvInput.addEventListener("change", () => { if (el.csvInput.files[0]) readCsvFile(el.csvInput.files[0]); });
     el.pasteImportBtn.addEventListener("click", importPastedUrls);
     $$('[data-sample]').forEach(btn => btn.addEventListener("click", () => loadSample(btn.dataset.sample)));
-    $$('[data-filter]').forEach(btn => btn.addEventListener("click", () => { state.filter = btn.dataset.filter; $$('[data-filter]').forEach(b => b.classList.toggle("active", b === btn)); renderRows(); }));
-    $("#addRowBtn").addEventListener("click", () => { state.rows.push(blankRow(state.rows.length + 1)); validateRows(); renderImport(); });
+    $$('[data-filter]').forEach(btn => btn.addEventListener("click", () => { state.filter = btn.dataset.filter; state.tablePage=1; $$('[data-filter]').forEach(b => b.classList.toggle("active", b === btn)); renderRows(); }));
+    el.addRowBtn.addEventListener("click", () => { if(state.rows.length>=MAX_RECIPIENTS)return toast(`The ${MAX_RECIPIENTS.toLocaleString()}-recipient limit has been reached.`); state.rows.push(blankRow(state.rows.length + 2)); state.tablePage=Math.ceil(state.rows.length/state.tablePageSize); validateRows(); renderImport(); });
+    el.rowPageSize.addEventListener("change", () => { state.tablePageSize=Number(el.rowPageSize.value);state.tablePage=1;renderRows(); });
+    el.previousRowsBtn.addEventListener("click", () => { if(state.tablePage>1){state.tablePage--;renderRows();} });
+    el.nextRowsBtn.addEventListener("click", () => { state.tablePage++;renderRows(); });
     el.recipientRows.addEventListener("input", editCell);
+    el.recipientRows.addEventListener("change", () => { if(state.filter!=="all")renderRows(); });
     el.recipientRows.addEventListener("click", e => { const button = e.target.closest("[data-remove]"); if (!button) return; state.rows.splice(Number(button.dataset.remove), 1); state.rows.forEach((r, i) => r._sourceRow = i + 2); validateRows(); renderImport(); });
     el.errorsCsvBtn.addEventListener("click", downloadErrors);
     el.showErrorsBtn.addEventListener("click", showValidationErrors);
@@ -74,7 +79,7 @@
     el.confirmGenerateBtn.addEventListener("click", generateExport);
     [el.cancelGenerateBtn,el.dialogCloseBtn].forEach(button => button.addEventListener("click", cancelGenerationOrClose));
     el.generateDialog.addEventListener("cancel", event => { if(state.isGenerating){event.preventDefault();requestGenerationCancel();} });
-    el.insufficientBtn.addEventListener("click", () => toast("Simulation: insufficient balance blocks export; no tokens were deducted."));
+    el.insufficientBtn.addEventListener("click", toggleInsufficientSimulation);
     el.downloadPdfBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.downloadPdfBtn, "Download print PDF"));
     el.downloadMappingBtn.addEventListener("click", () => runMappingDownload(state.currentExport, el.downloadMappingBtn));
     el.reprintBtn.addEventListener("click", () => runPdfDownload(state.currentExport, el.reprintBtn, "Reprint same export"));
@@ -136,8 +141,8 @@
     el.headerAvatar.title=signed?`Account · ${name}`:"Printcart account";
     el.accountMenuName.textContent=name||"Printcart account";
     el.accountMenuEmail.textContent=email;
-    const wallet=readSharedWallet();
-    el.walletValue.textContent=Number(wallet.balance||0).toLocaleString();
+    const wallet=readSharedWallet(),displayBalance=state.simulateInsufficient?0:Number(wallet.balance||0);
+    el.walletValue.textContent=displayBalance.toLocaleString();
     el.walletBtn.title=wallet.storageError?"Shared wallet could not be read because browser storage is unavailable.":signed?"Open Shared Token Wallet":"Sign in to view the Shared Token Wallet";
     if(!signed)closeAccountMenu();
   }
@@ -167,8 +172,9 @@
   function signOutSharedHeader() {
     closeAccountMenu();
     try { localStorage.removeItem(PROFILE_KEY); } catch {}
-    sharedProfile=null;
+    sharedProfile=null; state.simulateInsufficient=false;
     renderSharedHeader();
+    if(state.step===3)renderReview();
     toast("Signed out. Your current Bulk QR Cards work remains in this tab.");
   }
   async function submitAccountForm(event) {
@@ -190,7 +196,9 @@
       else {const passwordHash=await passwordVerifier(password,existing.passwordSalt);if(passwordHash!==existing.passwordHash){el.accountStatus.textContent="Incorrect email or password.";return;}profileName=existing.name;createdAt=existing.createdAt;}
       sharedProfile={name:profileName,email,createdAt,demo:true,authMethod:"browser-password-preview"};
       localStorage.setItem(PROFILE_KEY,JSON.stringify(sharedProfile));
+      state.simulateInsufficient=false;
       renderSharedHeader();
+      if(state.step===3)renderReview();
       closeAccountDialog();
       toast(create?"Account created. Shared Header is now signed in.":"Signed in. Shared account and wallet loaded.");
     } catch(error) { el.accountStatus.textContent=error?.message||"This browser could not complete demo sign-in."; }
@@ -202,7 +210,7 @@
   }
 
   function showValidationErrors() {
-    state.filter="error"; $$('[data-filter]').forEach(button=>button.classList.toggle("active",button.dataset.filter==="error")); renderRows(); el.recipientRows.closest(".table-scroll").scrollIntoView({behavior:"smooth",block:"center"});
+    state.filter="error"; state.tablePage=1; $$('[data-filter]').forEach(button=>button.classList.toggle("active",button.dataset.filter==="error")); renderRows(); el.recipientRows.closest(".table-scroll").scrollIntoView({behavior:"smooth",block:"center"});
   }
 
   function selectFeedbackRating(rating) {
@@ -275,7 +283,7 @@
     importRows(parseCsv(samples[name])); setStatus(`Loaded ${name === "errors" ? "mixed-error" : name} sample data.`);
   }
 
-  function importRows(rows) { state.rows = rows; state.previewIndex = 0; validateRows(); renderImport(); }
+  function importRows(rows) { state.rows = rows; state.previewIndex = 0; state.tablePage=1; validateRows(); renderImport(); }
 
   function validateRows() {
     const counts = new Map();
@@ -307,22 +315,23 @@
     const valid = getValidRows(), errors = getErrors(), copies = totalCards(valid), overLimit=copies>MAX_PHYSICAL_CARDS, blocking=errors.length+(overLimit?1:0);
     el.validationSummary.innerHTML = tile("Imported rows",state.rows.length)+tile("Valid rows",valid.length,"good")+tile("Blocking issues",blocking,blocking?"bad":"good")+tile("Physical cards",copies,overLimit?"bad":"");
     $("#allCount").textContent = state.rows.length; $("#validCount").textContent = valid.length; $("#errorCount").textContent = errors.length;
-    el.errorsCsvBtn.disabled = !errors.length; el.showErrorsBtn.disabled=!errors.length; el.toCustomizeBtn.disabled = !canContinue();
+    el.errorsCsvBtn.disabled = !errors.length; el.showErrorsBtn.disabled=!errors.length; el.toCustomizeBtn.disabled = !canContinue(); el.addRowBtn.disabled=state.rows.length>=MAX_RECIPIENTS; el.addRowBtn.title=el.addRowBtn.disabled?`Maximum ${MAX_RECIPIENTS.toLocaleString()} recipients reached`:"Add one recipient row";
     el.validationCallout.className=`validation-callout ${blocking?"has-errors":"is-valid"}`; el.validationTitle.textContent=errors.length?`${errors.length.toLocaleString()} row${errors.length===1?"":"s"} need attention`:overLimit?"Physical card limit exceeded":valid.length?"Validation complete":"Waiting for recipient data"; el.validationMessage.textContent=errors.length?"Fix every blocking row below or download the error report for offline correction.":overLimit?`${copies.toLocaleString()} physical cards were requested. Reduce copies to ${MAX_PHYSICAL_CARDS.toLocaleString()} or fewer before continuing.`:valid.length?`${valid.length.toLocaleString()} recipients · ${copies.toLocaleString()} physical cards · ready to customize.`:"Import recipient data to begin validation."; el.showErrorsBtn.hidden=!errors.length;
     el.importGate.textContent = errors.length ? `${errors.length} blocking row${errors.length===1?"":"s"}. Fix every error before continuing.` : overLimit?`${copies.toLocaleString()} physical cards exceeds the ${MAX_PHYSICAL_CARDS.toLocaleString()}-card prototype limit.`:valid.length ? `${valid.length.toLocaleString()} valid recipients · ${copies.toLocaleString()} physical cards ready.` : "Import valid recipient data to continue.";
-    el.rowLimitNote.textContent = state.rows.length > 20 ? `Showing the first 20 of ${state.rows.length} rows. Validation and export include all rows.` : `Showing all ${state.rows.length} rows.`;
     if(renderTable)renderRows();else refreshRenderedRowValidation();
   }
 
   function tile(label,value,kind="") { return `<div class="summary-tile ${kind}"><span>${escapeHtml(label)}</span><strong>${Number(value).toLocaleString()}</strong></div>`; }
 
   function renderRows() {
-    const filtered = state.rows.map((row,index)=>({row,index})).filter(({row}) => state.filter === "all" || (state.filter === "valid" ? !Object.keys(row._errors).length : Object.keys(row._errors).length)).slice(0,20);
+    const matching = state.rows.map((row,index)=>({row,index})).filter(({row}) => state.filter === "all" || (state.filter === "valid" ? !Object.keys(row._errors).length : Object.keys(row._errors).length));
+    const pageCount=Math.max(1,Math.ceil(matching.length/state.tablePageSize)); state.tablePage=Math.min(Math.max(1,state.tablePage),pageCount); const start=(state.tablePage-1)*state.tablePageSize,filtered=matching.slice(start,start+state.tablePageSize);
     el.recipientRows.innerHTML = filtered.map(({row,index}) => {
       const err = row._errors, hasErrors=Object.keys(err).length>0; const input = (field,value,type="text",extraClass="") => `<input type="${type}" data-index="${index}" data-field="${field}" class="${[extraClass,err[field]?"invalid":""].filter(Boolean).join(" ")}" value="${escapeAttr(value)}" ${field==="gallery_url"?`title="${escapeAttr(value)}"`:""} aria-label="${field.replaceAll("_"," ")} row ${row._sourceRow}" aria-invalid="${err[field]?"true":"false"}" ${err[field]?`aria-describedby="err-${index}-${field}"`:""}>${err[field]?`<span class="cell-error" id="err-${index}-${field}">${escapeHtml(err[field])}</span>`:""}`;
       const messages=Object.values(err).join(" · ");
       return `<tr class="${hasErrors?"has-row-errors":""}"><td class="row-number">${row._sourceRow}${err._row?`<span class="cell-error">${escapeHtml(err._row)}</span>`:""}</td><td>${input("recipient_id",row.recipient_id)}</td><td>${input("gallery_url",row.gallery_url,"url","url-field")}</td><td><div class="row-name">${input("recipient_name",row.recipient_name)}${input("group_name",row.group_name)}</div></td><td>${input("card_label",row.card_label)}</td><td>${input("copies",row.copies,"number")}</td><td>${input("sort_order",row.sort_order,"number")}</td><td><span class="status-badge ${hasErrors?"error":"valid"}" title="${escapeAttr(messages)}">${hasErrors?`! ${Object.keys(err).length} error${Object.keys(err).length===1?"":"s"}`:"✓ Valid"}</span></td><td><button class="icon-btn" type="button" data-remove="${index}" aria-label="Remove row ${row._sourceRow}">×</button></td></tr>`;
     }).join("") || `<tr><td colspan="9">No rows match this filter.</td></tr>`;
+    const first=matching.length?start+1:0,last=Math.min(start+state.tablePageSize,matching.length); el.rowPageStatus.textContent=`Page ${state.tablePage} of ${pageCount}`; el.previousRowsBtn.disabled=state.tablePage<=1; el.nextRowsBtn.disabled=state.tablePage>=pageCount; el.rowPageSize.value=String(state.tablePageSize); el.rowLimitNote.textContent=matching.length?`Showing rows ${first.toLocaleString()}–${last.toLocaleString()} of ${matching.length.toLocaleString()} ${state.filter==="all"?"total":state.filter} rows. Validation and export include all imported rows.`:`No ${state.filter==="all"?"":state.filter+" "}rows to display.`;
   }
 
   function refreshRenderedRowValidation(){
@@ -383,7 +392,7 @@
 
   function renderReview() {
     const rows=getValidRows(), cards=expandCards(rows), {cols,rows:rowCount,perPage}=gridInfo(); const pages=Math.ceil(cards.length/perPage);
-    const preflight=getExportPreflightIssues(rows),blocking=blockingIssueCount()+preflight.length; el.summaryRecipients.textContent=rows.length.toLocaleString(); el.summaryCards.textContent=cards.length.toLocaleString(); el.summaryPages.textContent=pages.toLocaleString(); el.summaryPaper.textContent=`${state.config.paper.toUpperCase()} · ${cols} × ${rowCount}`; el.summaryErrors.textContent=blocking; el.reviewValidationStatus.className=`status-badge ${blocking?"error":"valid"}`;el.reviewValidationStatus.textContent=blocking?`! ${blocking} blocking`:`✓ Validated`;el.reviewValidationStatus.title=preflight[0]?.message||""; const cost=Math.max(25,Math.ceil(cards.length/100)*5); el.tokenEstimate.textContent=`${cost} demo tokens`; el.dialogCards.textContent=cards.length.toLocaleString(); el.dialogCost.textContent=`${cost} demo tokens`;
+    const preflight=getExportPreflightIssues(rows),blocking=blockingIssueCount()+preflight.length,cost=exportCost(cards.length),balance=displayedWalletBalance(),insufficient=hasInsufficientBalance(cost); el.summaryRecipients.textContent=rows.length.toLocaleString(); el.summaryCards.textContent=cards.length.toLocaleString(); el.summaryPages.textContent=pages.toLocaleString(); el.summaryPaper.textContent=`${state.config.paper.toUpperCase()} · ${cols} × ${rowCount}`; el.summaryErrors.textContent=blocking; el.reviewValidationStatus.className=`status-badge ${blocking?"error":"valid"}`;el.reviewValidationStatus.textContent=blocking?`! ${blocking} blocking`:`✓ Validated`;el.reviewValidationStatus.title=preflight[0]?.message||""; el.tokenEstimate.textContent=`${cost} demo tokens${insufficient?" · insufficient balance":""}`; el.tokenEstimate.closest(".price-box").classList.toggle("insufficient",insufficient); el.dialogCards.textContent=cards.length.toLocaleString(); el.dialogCost.textContent=`${cost} demo tokens`; el.dialogWalletBalance.textContent=`${balance.toLocaleString()} tokens`; el.dialogWalletNote.textContent=sharedProfile?"No token is charged in this prototype. Production must use the same Shared Token Wallet with an idempotent ledger after confirmation.":"Not signed in. Prototype export remains free and does not create a token transaction."; el.insufficientBtn.textContent=state.simulateInsufficient?"Restore demo balance":"Simulate insufficient balance";
     el.pageSelect.innerHTML=Array.from({length:pages},(_,i)=>`<option value="${i}">Page ${i+1}${i===0?" · first":i===pages-1?" · last":i===Math.floor((pages-1)/2)?" · middle":""}</option>`).join("");
     renderReviewCard(); renderSheetPreview(); el.confirmMapping.checked=false; el.generateBtn.disabled=true;if(preflight.length)setStatus(`Review blocked: ${preflight[0].message}.`,true);
   }
@@ -415,11 +424,15 @@
     }
     return issues;
   }
-  function updateGenerateAvailability(){const issues=getExportPreflightIssues();el.generateBtn.disabled=!el.confirmMapping.checked||!canContinue()||issues.length>0;if(issues.length){el.reviewValidationStatus.title=issues[0].message;}}
+  function exportCost(cardCount=totalCards()){return Math.max(25,Math.ceil(cardCount/100)*5);}
+  function displayedWalletBalance(){if(state.simulateInsufficient)return 0;return Number(readSharedWallet().balance||0);}
+  function hasInsufficientBalance(cost=exportCost()){return state.simulateInsufficient||(!!sharedProfile&&displayedWalletBalance()<cost);}
+  function updateGenerateAvailability(){const issues=getExportPreflightIssues(),insufficient=hasInsufficientBalance();el.generateBtn.disabled=!el.confirmMapping.checked||!canContinue()||issues.length>0||insufficient;if(issues.length){el.reviewValidationStatus.title=issues[0].message;}else if(insufficient){el.reviewValidationStatus.title="Shared Token Wallet balance is insufficient for this simulated export.";}}
+  function toggleInsufficientSimulation(){state.simulateInsufficient=!state.simulateInsufficient;renderSharedHeader();renderReview();el.confirmMapping.checked=false;updateGenerateAvailability();toast(state.simulateInsufficient?"Insufficient balance simulated. Generate is blocked and no tokens were changed.":"Demo balance restored. No token transaction was created.");}
   function expandCards(rows) { return rows.flatMap(row=>Array.from({length:Number(row.copies||1)},(_,i)=>({...row,copy_number:i+1}))); }
 
   function openGenerateDialog() {
-    if(!canContinue())return toast("Fix blocking errors before generation.");const issues=getExportPreflightIssues();if(issues.length){setStatus(`Generate blocked: ${issues[0].message}.`,true);return toast(issues[0].message);}
+    if(!canContinue())return toast("Fix blocking errors before generation.");const issues=getExportPreflightIssues();if(issues.length){setStatus(`Generate blocked: ${issues[0].message}.`,true);return toast(issues[0].message);}if(hasInsufficientBalance()){setStatus("Generate blocked: insufficient Shared Token Wallet balance.",true);return toast("Insufficient Shared Token Wallet balance. No tokens were deducted.");}
     state.cancelRequested=false; state.cancelLocked=false; el.dialogError.hidden=true; el.dialogError.textContent=""; el.generationProgress.hidden=true; el.cancelGenerateBtn.disabled=false; el.cancelGenerateBtn.textContent="Cancel"; el.dialogCloseBtn.disabled=false; el.generateDialog.showModal();
   }
 
@@ -444,7 +457,7 @@
   }
 
   async function generateExport() {
-    if(state.isGenerating)return;const preflight=getExportPreflightIssues();if(preflight.length){setStatus(`Export blocked: ${preflight[0].message}.`,true);return toast(preflight[0].message);}
+    if(state.isGenerating)return;const preflight=getExportPreflightIssues();if(preflight.length){setStatus(`Export blocked: ${preflight[0].message}.`,true);return toast(preflight[0].message);}if(hasInsufficientBalance()){setStatus("Export blocked: insufficient Shared Token Wallet balance.",true);return toast("Insufficient balance. No files, history or token charge were created.");}
     state.isGenerating=true; state.cancelRequested=false; state.cancelLocked=false; el.confirmGenerateBtn.disabled=true; el.confirmGenerateBtn.textContent="Generating…"; el.cancelGenerateBtn.disabled=false; el.dialogCloseBtn.disabled=false; el.dialogError.hidden=true; el.dialogError.textContent=""; setStatus("Generating stable IDs, QR assets and export mapping…");
     try {
       const record=createExportRecord(), info=gridInfo(record.config), pages=Math.ceil(record.cards.length/info.perPage); updateGenerationProgress(0,record.cards.length,pages);
@@ -526,7 +539,7 @@
 
   function updateDemoCard(record,cardId,url,revoke){if(!revoke){try{const u=new URL(url);if(u.protocol!=="https:")throw new Error();}catch{return toast("Destination must be a valid HTTPS URL.");}}validateExportSnapshot(record);record.demo_overrides[cardId]={gallery_url:revoke?(record.demo_overrides[cardId]?.gallery_url||record.cards.find(c=>c.card_id===cardId)?.gallery_url):url,status:revoke?"Revoked":"Active"};record.audit.unshift({timestamp:new Date().toISOString(),action:revoke?"qr_revoked_demo":"destination_updated_demo",actor:"demo-user",target:cardId});const persisted=saveHistory();toast(persisted?(revoke?"Local revoke recorded. Locked export snapshot is unchanged.":"Local destination changed. Locked export snapshot is unchanged."):"Change is available in memory only; browser storage failed.");showHistoryDetail(state.histories.indexOf(record));}
 
-  function resetBatch(){state.rows=[];state.previewIndex=0;state.currentExport=null;el.urlPaste.value="";el.csvInput.value="";el.resultPanel.hidden=true;resetFeedbackForm();el.feedbackComment.disabled=false;switchImportMode("csv");renderImport();showStep(1);setStatus("New draft batch started.");}
+  function resetBatch(){state.rows=[];state.previewIndex=0;state.tablePage=1;state.currentExport=null;state.simulateInsufficient=false;renderSharedHeader();el.urlPaste.value="";el.csvInput.value="";el.resultPanel.hidden=true;resetFeedbackForm();el.feedbackComment.disabled=false;switchImportMode("csv");renderImport();showStep(1);setStatus("New draft batch started.");}
   function setStatus(message,error=false){el.globalStatus.textContent=message;el.globalStatus.style.color=error?"var(--red)":"var(--muted)";}
   function toast(message){el.toast.textContent=message;el.toast.classList.add("show");clearTimeout(toast.timer);toast.timer=setTimeout(()=>el.toast.classList.remove("show"),3300);}
 
